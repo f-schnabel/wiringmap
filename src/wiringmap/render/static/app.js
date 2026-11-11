@@ -150,7 +150,50 @@
 
   // The map: which boxes are visible ------------------------------------------------
 
-  function buildView(expanded, mode, showExternal, mutedNodes) {
+  // Reduce visual clutter, not dependency data. A -> C can be omitted when
+  // another route A -> ... -> C exists in the currently visible import graph.
+  // Cycle-internal edges are retained: transitive reduction is not unique
+  // for cyclic graphs, and pruning several such edges could break reachability.
+  function reduceTransitiveLinks(links) {
+    const pairs = links.map((l) => [l.s, l.t]);
+    const vertices = [...new Set(pairs.flat())];
+    const ranks = layerRanks(vertices, pairs); // cycle members share a rank
+    const next = new Map();
+    for (const l of links) {
+      if (!next.has(l.s)) next.set(l.s, []);
+      next.get(l.s).push(l.t);
+    }
+    const keep = [];
+    for (const link of links) {
+      if (ranks.get(link.s) === ranks.get(link.t)) {
+        keep.push(link);
+        continue;
+      }
+      // Never traverse the very edge being considered, even if another route
+      // loops back into its source through a strongly connected component.
+      const visited = new Set([link.s]);
+      const pending = [link.s];
+      let alternative = false;
+      for (let i = 0; i < pending.length && !alternative; i++) {
+        const from = pending[i];
+        for (const to of next.get(from) || []) {
+          if (from === link.s && to === link.t) continue;
+          if (to === link.t) {
+            alternative = true;
+            break;
+          }
+          if (!visited.has(to)) {
+            visited.add(to);
+            pending.push(to);
+          }
+        }
+      }
+      if (!alternative) keep.push(link);
+    }
+    return keep;
+  }
+
+  function buildView(expanded, mode, showExternal, mutedNodes, hideTransitive = false) {
     // Suppress individual module relationships *before* folding them into folder edges.
     // This preserves unrelated arrows when a folder contains both muted and active files.
     const mutedModules = new Set();
@@ -239,13 +282,19 @@
       }
     }
 
-    for (const l of links.values())
+    const visibleLinks = [...links.values()];
+    const renderedLinks = mode === "imports" && hideTransitive
+      ? reduceTransitiveLinks(visibleLinks) : visibleLinks;
+    for (const l of renderedLinks)
       elements.push({
         group: "edges",
         data: { id: `e:${l.s}->${l.t}`, source: l.s, target: l.t, n: l.n, typeOnly: l.typeOnly, w: Math.min(1 + Math.log2(l.n), 5) },
       });
 
-    return { elements, rep, nodeIds: new Set(elements.filter((e) => e.group === "nodes").map((e) => e.data.id)) };
+    return {
+      elements, rep, omittedLinks: visibleLinks.length - renderedLinks.length,
+      nodeIds: new Set(elements.filter((e) => e.group === "nodes").map((e) => e.data.id)),
+    };
   }
 
   // Folders that are rarely the first thing to read; they start closed.
@@ -1217,6 +1266,7 @@
       <ol>
         <li><b>Boxes are Python files.</b> Dashed boxes are folders: double-click one to open it.</li>
         <li><b>Arrows point to what a file imports.</b> Switch to “Calls” for call relationships. Calls start in a top-down layout; select “Top down” for Imports too.</li>
+        <li><b>Hide transitive</b> in Imports mode to remove redundant arrows (A → C when A → B → C). The original dependencies remain available in the details.</li>
         <li><b>Hide connections</b> in a file or folder’s details to remove its arrows without removing the node.</li>
         <li><b>Click a file</b> to see what it <span style="color:var(--accent-text)">uses</span> and what <span style="color:var(--usedby)">uses it</span>, and what is inside.</li>
         <li><b>Press /</b> to search any file, class or function.</li>
@@ -1275,6 +1325,7 @@
     const [layouts, setLayouts] = useState({ imports: "free", calls: "layers" });
     const layoutMode = layouts[mode];
     const [showExternal, setShowExternal] = useState(false);
+    const [hideTransitive, setHideTransitive] = useState(true);
     const [mutedNodes, setMutedNodes] = useState(() => new Set());
     const [selected, setSelected] = useState(null);
     const [code, setCode] = useState(null);
@@ -1293,7 +1344,10 @@
       } catch (e) {}
     }, [theme]);
 
-    const view = useMemo(() => buildView(expanded, mode, showExternal, mutedNodes), [expanded, mode, showExternal, mutedNodes]);
+    const view = useMemo(
+      () => buildView(expanded, mode, showExternal, mutedNodes, hideTransitive),
+      [expanded, mode, showExternal, mutedNodes, hideTransitive]
+    );
 
     const focus = useMemo(() => {
       if (!selected) return null;
@@ -1371,6 +1425,10 @@
             <button aria-pressed=${layoutMode === "layers"} onClick=${() => setLayout("layers")}
               title="Callers above callees, importers above their imports">Top down</button>
           </div>
+          ${mode === "imports" && html`<label class="check" title="Hide direct import arrows when another visible import path connects the same nodes. The underlying imports remain unchanged.">
+            <input type="checkbox" checked=${hideTransitive} onChange=${(e) => setHideTransitive(e.target.checked)} />
+            Hide transitive ${hideTransitive && view.omittedLinks > 0 ? `(${view.omittedLinks})` : ""}
+          </label>`}
           <label class="check"><input type="checkbox" checked=${showExternal} onChange=${(e) => setShowExternal(e.target.checked)} /> Packages</label>
           <button class="btn icon" title=${"Theme: " + theme} aria-label=${"Theme: " + theme} onClick=${() => setTheme(THEMES[(THEMES.indexOf(theme) + 1) % THEMES.length])}>
             ${theme === "dark"
