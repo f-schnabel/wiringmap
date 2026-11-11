@@ -150,47 +150,70 @@
 
   // The map: which boxes are visible ------------------------------------------------
 
-  // Reduce visual clutter, not dependency data. A -> C can be omitted when
-  // another route A -> ... -> C exists in the currently visible import graph.
-  // Cycle-internal edges are retained: transitive reduction is not unique
-  // for cyclic graphs, and pruning several such edges could break reachability.
+  // Remove redundant imports only from the rendered view, preserving
+  // reachability even in cyclic graphs. SCCs are atomic for this purpose:
+  // all internal edges stay; between two SCCs, one representative is enough.
   function reduceTransitiveLinks(links) {
-    const pairs = links.map((l) => [l.s, l.t]);
-    const vertices = [...new Set(pairs.flat())];
-    const ranks = layerRanks(vertices, pairs); // cycle members share a rank
-    const next = new Map();
-    for (const l of links) {
-      if (!next.has(l.s)) next.set(l.s, []);
-      next.get(l.s).push(l.t);
-    }
-    const keep = [];
-    for (const link of links) {
-      if (ranks.get(link.s) === ranks.get(link.t)) {
-        keep.push(link);
-        continue;
+    if (links.length < 2) return links;
+    const vertices = [...new Set(links.flatMap((l) => [l.s, l.t]))];
+    const ranks = layerRanks(vertices, links.map((l) => [l.s, l.t]));
+    const parent = new Map(vertices.map((id) => [id, id]));
+    const find = (id) => {
+      let root = id;
+      while (parent.get(root) !== root) root = parent.get(root);
+      while (parent.get(id) !== root) {
+        const next = parent.get(id);
+        parent.set(id, root);
+        id = next;
       }
-      // Never traverse the very edge being considered, even if another route
-      // loops back into its source through a strongly connected component.
-      const visited = new Set([link.s]);
-      const pending = [link.s];
-      let alternative = false;
-      for (let i = 0; i < pending.length && !alternative; i++) {
-        const from = pending[i];
-        for (const to of next.get(from) || []) {
-          if (from === link.s && to === link.t) continue;
-          if (to === link.t) {
-            alternative = true;
+      return root;
+    };
+    // Distinct SCCs connected by an edge must have different topological ranks.
+    // Therefore equal-rank edges can only connect members of the same SCC.
+    for (const l of links) if (ranks.get(l.s) === ranks.get(l.t))
+      parent.set(find(l.s), find(l.t));
+
+    const pairs = new Map(), adjacency = new Map();
+    for (const l of links) {
+      const source = find(l.s), target = find(l.t);
+      if (source === target) continue;
+      const key = source + "\n" + target;
+      if (!pairs.has(key)) pairs.set(key, []);
+      pairs.get(key).push(l);
+      if (!adjacency.has(source)) adjacency.set(source, new Set());
+      adjacency.get(source).add(target);
+    }
+
+    const kept = new Set(links.filter((l) => find(l.s) === find(l.t)));
+    for (const group of pairs.values()) {
+      const source = find(group[0].s), target = find(group[0].t);
+      // Find a route via a *different* SCC, excluding all edges from this
+      // source SCC to this target SCC. This prevents mutually dependent
+      // parallel paths from being removed simultaneously.
+      const visited = new Set([source]), queue = [source];
+      let alternate = false;
+      for (let i = 0; i < queue.length && !alternate; i++) {
+        const current = queue[i];
+        for (const next of adjacency.get(current) || []) {
+          if (current === source && next === target) continue;
+          if (next === target) {
+            alternate = true;
             break;
           }
-          if (!visited.has(to)) {
-            visited.add(to);
-            pending.push(to);
+          if (!visited.has(next)) {
+            visited.add(next);
+            queue.push(next);
           }
         }
       }
-      if (!alternative) keep.push(link);
+      if (!alternate) {
+        // One real source->target edge is sufficient between two SCCs;
+        // deterministic selection prevents arrows jumping on rebuilds.
+        kept.add(group.slice().sort((a, b) =>
+          a.s.localeCompare(b.s) || a.t.localeCompare(b.t))[0]);
+      }
     }
-    return keep;
+    return links.filter((l) => kept.has(l));
   }
 
   function buildView(expanded, mode, showExternal, mutedNodes, hideTransitive = false) {
