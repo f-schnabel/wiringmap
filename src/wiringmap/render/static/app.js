@@ -150,7 +150,73 @@
 
   // The map: which boxes are visible ------------------------------------------------
 
-  function buildView(expanded, mode, showExternal, mutedNodes) {
+  // Remove redundant imports only from the rendered view, preserving
+  // reachability even in cyclic graphs. SCCs are atomic for this purpose:
+  // all internal edges stay; between two SCCs, one representative is enough.
+  function reduceTransitiveLinks(links) {
+    if (links.length < 2) return links;
+    const vertices = [...new Set(links.flatMap((l) => [l.s, l.t]))];
+    const ranks = layerRanks(vertices, links.map((l) => [l.s, l.t]));
+    const parent = new Map(vertices.map((id) => [id, id]));
+    const find = (id) => {
+      let root = id;
+      while (parent.get(root) !== root) root = parent.get(root);
+      while (parent.get(id) !== root) {
+        const next = parent.get(id);
+        parent.set(id, root);
+        id = next;
+      }
+      return root;
+    };
+    // Distinct SCCs connected by an edge must have different topological ranks.
+    // Therefore equal-rank edges can only connect members of the same SCC.
+    for (const l of links) if (ranks.get(l.s) === ranks.get(l.t))
+      parent.set(find(l.s), find(l.t));
+
+    const pairs = new Map(), adjacency = new Map();
+    for (const l of links) {
+      const source = find(l.s), target = find(l.t);
+      if (source === target) continue;
+      const key = source + "\n" + target;
+      if (!pairs.has(key)) pairs.set(key, []);
+      pairs.get(key).push(l);
+      if (!adjacency.has(source)) adjacency.set(source, new Set());
+      adjacency.get(source).add(target);
+    }
+
+    const kept = new Set(links.filter((l) => find(l.s) === find(l.t)));
+    for (const group of pairs.values()) {
+      const source = find(group[0].s), target = find(group[0].t);
+      // Find a route via a *different* SCC, excluding all edges from this
+      // source SCC to this target SCC. This prevents mutually dependent
+      // parallel paths from being removed simultaneously.
+      const visited = new Set([source]), queue = [source];
+      let alternate = false;
+      for (let i = 0; i < queue.length && !alternate; i++) {
+        const current = queue[i];
+        for (const next of adjacency.get(current) || []) {
+          if (current === source && next === target) continue;
+          if (next === target) {
+            alternate = true;
+            break;
+          }
+          if (!visited.has(next)) {
+            visited.add(next);
+            queue.push(next);
+          }
+        }
+      }
+      if (!alternate) {
+        // One real source->target edge is sufficient between two SCCs;
+        // deterministic selection prevents arrows jumping on rebuilds.
+        kept.add(group.slice().sort((a, b) =>
+          a.s.localeCompare(b.s) || a.t.localeCompare(b.t))[0]);
+      }
+    }
+    return links.filter((l) => kept.has(l));
+  }
+
+  function buildView(expanded, mode, showExternal, mutedNodes, hideTransitive = false) {
     // Suppress individual module relationships *before* folding them into folder edges.
     // This preserves unrelated arrows when a folder contains both muted and active files.
     const mutedModules = new Set();
@@ -239,13 +305,19 @@
       }
     }
 
-    for (const l of links.values())
+    const visibleLinks = [...links.values()];
+    const renderedLinks = mode === "imports" && hideTransitive
+      ? reduceTransitiveLinks(visibleLinks) : visibleLinks;
+    for (const l of renderedLinks)
       elements.push({
         group: "edges",
         data: { id: `e:${l.s}->${l.t}`, source: l.s, target: l.t, n: l.n, typeOnly: l.typeOnly, w: Math.min(1 + Math.log2(l.n), 5) },
       });
 
-    return { elements, rep, nodeIds: new Set(elements.filter((e) => e.group === "nodes").map((e) => e.data.id)) };
+    return {
+      elements, rep, omittedLinks: visibleLinks.length - renderedLinks.length,
+      nodeIds: new Set(elements.filter((e) => e.group === "nodes").map((e) => e.data.id)),
+    };
   }
 
   // Folders that are rarely the first thing to read; they start closed.
@@ -1217,6 +1289,7 @@
       <ol>
         <li><b>Boxes are Python files.</b> Dashed boxes are folders: double-click one to open it.</li>
         <li><b>Arrows point to what a file imports.</b> Switch to “Calls” for call relationships. Calls start in a top-down layout; select “Top down” for Imports too.</li>
+        <li><b>Hide transitive</b> in Imports mode to remove redundant arrows (A → C when A → B → C). The original dependencies remain available in the details.</li>
         <li><b>Hide connections</b> in a file or folder’s details to remove its arrows without removing the node.</li>
         <li><b>Click a file</b> to see what it <span style="color:var(--accent-text)">uses</span> and what <span style="color:var(--usedby)">uses it</span>, and what is inside.</li>
         <li><b>Press /</b> to search any file, class or function.</li>
@@ -1275,6 +1348,7 @@
     const [layouts, setLayouts] = useState({ imports: "free", calls: "layers" });
     const layoutMode = layouts[mode];
     const [showExternal, setShowExternal] = useState(false);
+    const [hideTransitive, setHideTransitive] = useState(true);
     const [mutedNodes, setMutedNodes] = useState(() => new Set());
     const [selected, setSelected] = useState(null);
     const [code, setCode] = useState(null);
@@ -1293,7 +1367,10 @@
       } catch (e) {}
     }, [theme]);
 
-    const view = useMemo(() => buildView(expanded, mode, showExternal, mutedNodes), [expanded, mode, showExternal, mutedNodes]);
+    const view = useMemo(
+      () => buildView(expanded, mode, showExternal, mutedNodes, hideTransitive),
+      [expanded, mode, showExternal, mutedNodes, hideTransitive]
+    );
 
     const focus = useMemo(() => {
       if (!selected) return null;
@@ -1371,6 +1448,10 @@
             <button aria-pressed=${layoutMode === "layers"} onClick=${() => setLayout("layers")}
               title="Callers above callees, importers above their imports">Top down</button>
           </div>
+          ${mode === "imports" && html`<label class="check" title="Hide direct import arrows when another visible import path connects the same nodes. The underlying imports remain unchanged.">
+            <input type="checkbox" checked=${hideTransitive} onChange=${(e) => setHideTransitive(e.target.checked)} />
+            Hide transitive ${hideTransitive && view.omittedLinks > 0 ? `(${view.omittedLinks})` : ""}
+          </label>`}
           <label class="check"><input type="checkbox" checked=${showExternal} onChange=${(e) => setShowExternal(e.target.checked)} /> Packages</label>
           <button class="btn icon" title=${"Theme: " + theme} aria-label=${"Theme: " + theme} onClick=${() => setTheme(THEMES[(THEMES.indexOf(theme) + 1) % THEMES.length])}>
             ${theme === "dark"
