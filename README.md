@@ -31,6 +31,11 @@ any Python project:
 uvx wiringmap build . --open
 ```
 
+If running a moving Git branch instead of a release, use `uvx --refresh --from
+git+https://github.com/OWNER/wiringmap.git@BRANCH wiringmap build . --open`
+to pick up newly pushed changes. Regenerate the report and reload the page;
+the generated HTML is static.
+
 Or install it: `pip install wiringmap` (or `uv tool install wiringmap`), then run
 `wiringmap build . --open`.
 
@@ -45,6 +50,11 @@ folder ignores itself, so it is never committed by accident.
   Switch between **Free** and **Top down** for either view. Cyclic dependencies
   share a layer since no ordering can make every edge in a cycle point down. Large projects start with folders closed (double-click to open one), and
   tests, docs and migrations stay closed so you see the application first.
+- **Hide transitive imports** (on by default) to simplify the map without deleting
+  underlying dependency data: if A imports B and C, and B imports C, the direct
+  A → C arrow is omitted. The filter works on the visible graph, including collapsed
+  folder edges, and preserves cycles. Disable it to show every direct import.
+  Calls are never transitively reduced, since direct calls have distinct meaning.
 - **Hide noisy connections** from a file, folder, or external package using its details panel.
   The node remains visible, and its arrows disappear in both Imports and Calls views.
   You can toggle multiple nodes and restore them with **Show all connections**.
