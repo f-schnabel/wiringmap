@@ -198,6 +198,29 @@
 
   // The map: which boxes are visible ------------------------------------------------
 
+  // Browser-side focus uses the already generated graph; it never rescans files.
+  // Folder focus shows only descendants; file focus shows the file and its
+  // immediate importing/calling neighbors in the selected relationship mode.
+  function focusModules(scope, mode) {
+    if (!scope) return null;
+    const selection = new Set();
+    if (isDir(scope)) {
+      forEachModule(scope, (id) => selection.add(id));
+    } else {
+      const subject = moduleOf(scope);
+      if (!subject) return null;
+      selection.add(subject);
+      for (const edge of G.edges) {
+        if (edge.kind !== mode) continue;
+        const from = moduleOf(edge.source), to = moduleOf(edge.target);
+        if (from === subject && to) selection.add(to);
+        if (to === subject && from) selection.add(from);
+      }
+    }
+    return selection;
+  }
+
+
   // Remove redundant imports only from the rendered view, preserving
   // reachability even in cyclic graphs. SCCs are atomic for this purpose:
   // all internal edges stay; between two SCCs, one representative is enough.
@@ -264,7 +287,7 @@
     return links.filter((l) => kept.has(l));
   }
 
-  function buildView(expanded, mode, showExternal, mutedNodes, hideTransitive = false, sizeByConnections = false, markCycles = true) {
+  function buildView(expanded, mode, showExternal, mutedNodes, hideTransitive = false, sizeByConnections = false, markCycles = true, focusScope = null) {
     // Suppress individual module relationships *before* folding them into folder edges.
     // This preserves unrelated arrows when a folder contains both muted and active files.
     const mutedModules = new Set();
@@ -273,9 +296,14 @@
       else if (kindOf(id) === "module") mutedModules.add(id);
     }
     const elements = [];
+    const onlyModules = focusModules(focusScope, mode);
+    const onlyFolders = new Set();
+    if (onlyModules) for (const id of onlyModules)
+      for (const dir of ancestorsOf(id)) if (isDir(dir)) onlyFolders.add(dir);
     const rep = new Map(); // module id -> id of the box that currently stands for it
 
     function addModule(id, parent) {
+      if (onlyModules && !onlyModules.has(id)) return;
       const n = nodes.get(id);
       const entry = !!(n.attrs && n.attrs.entry_point);
       const st = DIFF ? moduleStatus(id) : null;
@@ -288,6 +316,7 @@
     }
 
     function addGhosts(dirId, parent) {
+      if (onlyModules) return;
       for (const item of GHOSTS.get(dirId) || []) {
         const label = MARK.removed + item.path.slice(item.path.lastIndexOf("/") + 1);
         elements.push({ group: "nodes", data: { id: "ghost:" + item.id, parent, label, kind: "module", st: "removed", w: labelWidth(label) } });
@@ -296,6 +325,7 @@
 
     function addDir(dirId, parent) {
       const { id, label } = compact(dirId);
+      if (onlyModules && !onlyFolders.has(id)) return;
       const muted = mutedNodes.has(id) || ancestorsOf(id).some((a) => mutedNodes.has(a));
       if (expanded.has(id)) {
         elements.push({ group: "nodes", data: { id, parent, label: label + "/", kind: "group", muted } });
@@ -303,11 +333,15 @@
         addGhosts(id, id);
         return;
       }
-      const count = pyCount.get(id);
+      let count = pyCount.get(id);
+      if (onlyModules) {
+        count = 0;
+        forEachModule(id, (module) => { if (onlyModules.has(module)) count++; });
+      }
       const changes = changesUnder.get(id) || 0;
       const text = `${label}/\n${plural(count, "module")}${changes ? ` · ${changes} changed` : ""}`;
       elements.push({ group: "nodes", data: { id, parent, label: text, kind: "folder", chg: changes > 0, dim: !!DIFF && !changes, muted, cycle: markCycles && mode === "imports" && IMPORT_CYCLES.folders.has(id), w: labelWidth(text) } });
-      forEachModule(id, (m) => rep.set(m, id));
+      forEachModule(id, (m) => { if (!onlyModules || onlyModules.has(m)) rep.set(m, id); });
     }
 
     for (const k of displayKids(ROOT)) (isDir(k) ? addDir : addModule)(k, undefined);
@@ -338,7 +372,7 @@
         }
     }
 
-    if (showExternal) {
+    if (showExternal && !onlyModules) {
       const used = new Set();
       for (const [src, list] of out.imports)
         for (const e of list) {
