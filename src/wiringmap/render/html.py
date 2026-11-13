@@ -48,7 +48,9 @@ def collect_sources(root: Path, graph: CodeGraph, limit: int | None = SOURCE_BUD
 
 
 def render_report(
-    graph: CodeGraph, sources: dict[str, str] | None = None, diff: GraphDiff | None = None,
+    graph: CodeGraph,
+    sources: dict[str, str] | None = None,
+    diff: GraphDiff | None = None,
     architecture: dict | None = None,
 ) -> str:
     """The report page; with ``diff``, the map also shows what changed."""
