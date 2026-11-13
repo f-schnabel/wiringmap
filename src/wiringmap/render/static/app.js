@@ -499,6 +499,7 @@
           opacity: 0.75,
         },
       },
+      { selector: "edge", style: { "events": "no", "text-events": "no" } },
       { selector: "edge[?typeOnly]", style: { "line-style": "dashed" } },
       { selector: "edge[?cycle]", style: { "line-color": c("--danger"), "target-arrow-color": c("--danger"), opacity: 0.95 } },
       { selector: ".faded", style: { opacity: 0.13 } },
@@ -763,14 +764,61 @@
     };
   }
 
-  // Dragging arrows always pans; nodes pan by default and can be moved on demand.
-  function configureInteraction(cy, interactionMode) {
+  // Edges are decorative: no hit-testing, no selections, no mouse focus.
+  function configureInteraction(cy) {
+    cy.nodes().panify();
     cy.edges().unselectify().panify();
-    if (interactionMode === "pan") cy.nodes().panify();
-    else cy.nodes().unpanify();
   }
 
-  function GraphView({ view, focus, centerTick, theme, fitTick, layoutMode, interactionMode, onSelect, onToggle, onBusy }) {
+  // Right-button drag repositions a node (or an expanded folder's children).
+  // Ordinary left-button dragging always pans. Edges never capture gestures.
+  function attachRightDrag(cy) {
+    let drag = null;
+    const canvas = cy.container();
+    const preventMenu = (event) => event.preventDefault();
+    canvas.addEventListener("contextmenu", preventMenu);
+
+    const pointer = (event) => {
+      if (event.renderedPosition) return event.renderedPosition;
+      if (event.cyRenderedPosition) return event.cyRenderedPosition;
+      const native = event.originalEvent;
+      if (!native || native.clientX === undefined) return null;
+      const rect = canvas.getBoundingClientRect();
+      return { x: native.clientX - rect.left, y: native.clientY - rect.top };
+    };
+    cy.on("cxttapstart", "node", (event) => {
+      if (event.originalEvent?.touches?.length) return;
+      const start = pointer(event);
+      if (!start) return;
+      const node = event.target;
+      const items = node.isParent()
+        ? node.descendants().filter((item) => !item.isParent()).toArray()
+        : [node];
+      drag = {
+        start, items,
+        positions: items.map((item) => ({ ...item.position() })),
+      };
+    });
+    cy.on("cxtdrag", (event) => {
+      if (!drag) return;
+      const now = pointer(event);
+      if (!now) return;
+      const dx = (now.x - drag.start.x) / cy.zoom();
+      const dy = (now.y - drag.start.y) / cy.zoom();
+      cy.batch(() => {
+        drag.items.forEach((node, index) => {
+          if (!node.removed()) node.position({
+            x: drag.positions[index].x + dx,
+            y: drag.positions[index].y + dy,
+          });
+        });
+      });
+    });
+    cy.on("cxttapend", () => { drag = null; });
+    return () => canvas.removeEventListener("contextmenu", preventMenu);
+  }
+
+  function GraphView({ view, focus, centerTick, theme, fitTick, layoutMode, onSelect, onToggle, onBusy }) {
     const box = useRef(null);
     const cyRef = useRef(null);
     const positions = useRef(new Map());
@@ -791,12 +839,13 @@
       cy.on("tap", "node", (ev) => handlers.current.onSelect(ev.target.id()));
       cy.on("tap", (ev) => ev.target === cy && handlers.current.onSelect(null));
       cy.on("dbltap", "node[kind = 'folder'], node[kind = 'group']", (ev) => handlers.current.onToggle(ev.target.id()));
+      const detachRightDrag = attachRightDrag(cy);
       const scheme = window.matchMedia("(prefers-color-scheme: dark)");
       const restyle = () => cy.style(graphStyle());
       scheme.addEventListener("change", restyle);
       cyRef.current = cy;
       window.wiringmap = { cy, graph: G }; // handy in the browser console
-      return () => (scheme.removeEventListener("change", restyle), cy.destroy());
+      return () => (detachRightDrag(), scheme.removeEventListener("change", restyle), cy.destroy());
     }, []);
 
     useEffect(() => {
@@ -871,8 +920,8 @@
 
     useEffect(() => {
       const cy = cyRef.current;
-      if (cy) configureInteraction(cy, interactionMode);
-    }, [view, interactionMode]);
+      if (cy) configureInteraction(cy);
+    }, [view]);
 
     useEffect(() => {
       const cy = cyRef.current;
@@ -1598,7 +1647,7 @@
       <h2>${G.root_name}</h2>
       <p>A map of how this code is wired, made by wiringmap ${G.generator.version}${when ? " on " + when : ""}.</p>
       <ol>
-        <li><b>Pan</b> is the default: drag anywhere (including a node or an arrow) to pan. Switch to <b>Move nodes</b> to rearrange boxes. Arrows are never selectable.</li>
+        <li><b>Left-drag</b> pans anywhere, <b>right-drag a box</b> moves it. Lines never intercept clicks.</li>
         <li><b>Boxes are Python files.</b> Dashed boxes are folders: double-click one to open it.</li>
         <li><b>Arrows point to what a file imports.</b> Switch to “Calls” for call relationships. Calls start in a top-down layout; select “Top down” for Imports too.</li>
         <li><b>Fit</b> reframes the entire graph; expanding or collapsing folders preserves the current camera.</li>
@@ -1663,7 +1712,6 @@
     const [mode, setMode] = useState("imports");
     const [layouts, setLayouts] = useState({ imports: "free", calls: "layers" });
     const layoutMode = layouts[mode];
-    const [interactionMode, setInteractionMode] = useState("pan");
     const [showExternal, setShowExternal] = useState(false);
     const [hideTransitive, setHideTransitive] = useState(true);
     const [sizeByConnections, setSizeByConnections] = useState(false);
@@ -1810,7 +1858,6 @@
                 centerTick=${centerTick}
                 fitTick=${fitTick}
                 layoutMode=${layoutMode}
-                interactionMode=${interactionMode}
                 theme=${theme}
                 onSelect=${onMapSelect}
                 onToggle=${toggle}
@@ -1819,14 +1866,6 @@
           </div>
           ${presentation === "matrix" && html`<${MatrixView} matrix=${MATRIX} selected=${matrixCell} onCell=${setMatrixCell} />`}
           <div class="overlay tools" hidden=${presentation === "matrix"}>
-            <div class="seg" role="group" aria-label="Map interaction mode">
-              <button aria-pressed=${interactionMode === "pan"}
-                title="Drag anywhere, including nodes and lines, to pan. Click nodes for details."
-                onClick=${() => setInteractionMode("pan")}>Pan</button>
-              <button aria-pressed=${interactionMode === "move"}
-                title="Drag nodes to reposition them. Drag the background or lines to pan."
-                onClick=${() => setInteractionMode("move")}>Move nodes</button>
-            </div>
             <button class="btn" onClick=${() => setFitTick((t) => t + 1)} title="Fit the whole map on screen">Fit</button>
             <button class="btn" disabled=${totalModules > MAX_EXPAND_ALL} title=${totalModules > MAX_EXPAND_ALL ? "Too many files to show at once; open folders one by one" : "Open every folder"} onClick=${() => setExpanded(allFolders())}>Expand all</button>
             <button class="btn" onClick=${() => setExpanded(new Set())}>Collapse all</button>
