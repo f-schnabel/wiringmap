@@ -132,7 +132,9 @@ def build(
     quiet: Annotated[bool, typer.Option("--quiet", "-q", help="Only print errors.")] = False,
     check_imports: Annotated[
         bool,
-        typer.Option("--check-imports", help="Run the project's Import Linter and embed its result."),
+        typer.Option(
+            "--check-imports", help="Run the project's Import Linter and embed its result."
+        ),
     ] = False,
 ) -> None:
     """Build an interactive map of a repository as one offline HTML file."""
@@ -257,12 +259,20 @@ def diff(
         elif suffix == ".md":
             _write(output, markdown, quiet=True)
         else:
-            _write(output, render_report(after, sources, diff=result, architecture=architecture), quiet=True)
+            _write(
+                output,
+                render_report(after, sources, diff=result, architecture=architecture),
+                quiet=True,
+            )
     if open_report:
         target = output if output is not None and output.suffix.lower() == ".html" else None
         if target is None:
             target = _output_dir(path) / "diff.html"
-            _write(target, render_report(after, sources, diff=result, architecture=architecture), quiet=True)
+            _write(
+                target,
+                render_report(after, sources, diff=result, architecture=architecture),
+                quiet=True,
+            )
         webbrowser.open(target.resolve().as_uri())
 
 
