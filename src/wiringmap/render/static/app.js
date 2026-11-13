@@ -1428,8 +1428,9 @@
         ? html`<div class="matrix-scroll"><table class="matrix-table" aria-label="Module import dependencies by package">
             <thead><tr><th class="matrix-corner" scope="col">Imports ↓ / →</th>
               ${entries.map((entry) => html`<th scope="col"
-                class=${"matrix-depth-" + Math.min(5, entry.depth) + (entry.kind === "package" ? " matrix-package-heading" : "")}
-                >${label(entry)}</th>`)}
+                class=${"matrix-column-head matrix-depth-" + Math.min(5, entry.depth) + (entry.kind === "package" ? " matrix-package-heading" : "")}>
+                  <div class="matrix-column-label">${label(entry)}</div>
+                </th>`)}
               <th scope="col">Total</th>
             </tr></thead>
             <tbody>${entries.map((from) => {
