@@ -1023,6 +1023,178 @@
     </div>`;
   }
 
+
+  // Dependency matrix: group modules by direct child of the configured root.
+  // We preserve concrete module import edges for cell drill-down; the matrix
+  // never uses the display-only transitive-reduced graph.
+  const ARCH = DATA.architecture || null;
+
+  function dependencyMatrix() {
+    const modules = G.nodes.filter((n) => n.kind === "module").map((n) => n.id);
+    const candidates = (ARCH && ARCH.root_packages) || [];
+    const counts = new Map();
+    for (const id of modules) {
+      const top = id.split(".")[0];
+      counts.set(top, (counts.get(top) || 0) + 1);
+    }
+    const fallback = [...counts].sort((a, b) => b[1] - a[1])[0]?.[0] || "";
+    const root = candidates.find((name) => modules.some((id) => id === name || id.startsWith(name + "."))) || fallback;
+
+    const ofModule = (id) => {
+      if (id === root) return "(root)";
+      if (!id.startsWith(root + ".")) return null;
+      return id.slice(root.length + 1).split(".")[0];
+    };
+    const groups = new Set();
+    const owners = new Map();
+    for (const id of modules) {
+      const group = ofModule(id);
+      if (group !== null) {
+        owners.set(id, group);
+        groups.add(group);
+      }
+    }
+    const layerPositions = new Map();
+    for (const contract of (ARCH && ARCH.contracts) || []) {
+      if (contract.type !== "layers") continue;
+      const containers = contract.containers || [];
+      if (containers.length && !containers.includes(root)) continue;
+      const layers = contract.layers || [];
+      if (!Array.isArray(layers)) continue;
+      for (const [level, expression] of layers.entries()) {
+        // "|" and ":" both mean that these names occupy one declared layer.
+        for (const name of String(expression).replace(/[()]/g, "").split(/[|:]/).map((n) => n.trim())) {
+          if (name && !layerPositions.has(name)) layerPositions.set(name, level);
+        }
+      }
+      break;
+    }
+    const packages = [...groups].sort((a, b) => {
+      const x = layerPositions.get(a) ?? Infinity, y = layerPositions.get(b) ?? Infinity;
+      return x - y || a.localeCompare(b);
+    });
+    const cells = new Map();
+    let total = 0;
+    for (const e of G.edges) {
+      if (e.kind !== "imports") continue;
+      const from = owners.get(e.source), to = owners.get(e.target);
+      if (from === undefined || to === undefined) continue;
+      const key = from + "\n" + to;
+      if (!cells.has(key)) cells.set(key, { from, to, imports: [], count: 0, typeOnly: 0 });
+      const cell = cells.get(key);
+      cell.imports.push(e);
+      cell.count++;
+      if (e.attrs && e.attrs.type_only) cell.typeOnly++;
+      total++;
+    }
+    for (const cell of cells.values()) cell.imports.sort((a, b) =>
+      a.source.localeCompare(b.source) || a.target.localeCompare(b.target));
+    const maxCount = Math.max(1, ...[...cells.values()].map((v) => v.count));
+    return { root, packages, cells, total, maxCount, layerPositions };
+  }
+
+  const MATRIX = dependencyMatrix();
+
+  function MatrixView({ matrix, selected, onCell }) {
+    const [filter, setFilter] = useState("");
+    const query = filter.trim().toLowerCase();
+    const packages = matrix.packages.filter((name) => !query || name.toLowerCase().includes(query));
+    return html`<div class="matrix-view">
+      <div class="matrix-head">
+        <div>
+          <h2>Dependency matrix</h2>
+          <p>Rows import columns · direct module imports, including type-only imports.</p>
+        </div>
+        <input class="matrix-filter" type="search" aria-label="Filter packages"
+          placeholder="Filter packages…" value=${filter} onInput=${(e) => setFilter(e.target.value)} />
+      </div>
+      ${packages.length
+        ? html`<div class="matrix-scroll"><table class="matrix-table" aria-label="Module import dependencies by package">
+            <thead><tr><th class="matrix-corner" scope="col">Imports ↓ / →</th>
+              ${packages.map((name) => html`<th scope="col" title=${matrix.root + "." + name}>${name}</th>`)}
+              <th scope="col">Total</th>
+            </tr></thead>
+            <tbody>${packages.map((from) => {
+              const rowTotal = matrix.packages.reduce((sum, to) =>
+                sum + (matrix.cells.get(from + "\n" + to)?.count || 0), 0);
+              return html`<tr>
+                <th scope="row" title=${matrix.root + "." + from}>${from}</th>
+                ${packages.map((to) => {
+                  const cell = matrix.cells.get(from + "\n" + to);
+                  const count = cell?.count || 0;
+                  const level = count ? Math.min(5, Math.max(1, Math.ceil(Math.log1p(count) / Math.log1p(matrix.maxCount) * 5))) : 0;
+                  const chosen = selected && selected.from === from && selected.to === to;
+                  return html`<td>
+                    ${count
+                      ? html`<button class=${"matrix-value heat-" + level + (chosen ? " active" : "")}
+                          aria-pressed=${!!chosen}
+                          title=${from + " imports " + to + ": " + count + " module imports" + (cell.typeOnly ? " (" + cell.typeOnly + " type-only)" : "")}
+                          aria-label=${from + " imports " + to + ": " + count + " module imports"}
+                          onClick=${() => onCell({ from, to })}>${count}</button>`
+                      : html`<span class="matrix-empty" aria-label="No imports">·</span>`}
+                  </td>`;
+                })}
+                <td class="matrix-total">${rowTotal}</td>
+              </tr>`;
+            })}</tbody>
+          </table></div>`
+        : html`<p class="hint">No packages match this filter.</p>`}
+      <div class="matrix-foot">Color intensity represents the number of direct module imports, not contract violations.
+        ${matrix.packages.length} package groups · ${plural(matrix.total, "import")}.</div>
+    </div>`;
+  }
+
+  function MatrixInspector({ matrix, selected, onModule }) {
+    const [showAll, setShowAll] = useState(false);
+    useEffect(() => setShowAll(false), [selected?.from, selected?.to]);
+    if (!selected) {
+      const check = ARCH?.check;
+      return html`<div class="pad">
+        <h2>Architecture</h2>
+        <p class="hint">Select a matrix cell to inspect the direct module imports.</p>
+        <div class="facts">
+          <div class="fact"><b>${matrix.packages.length}</b><span>packages</span></div>
+          <div class="fact"><b>${matrix.total}</b><span>direct imports</span></div>
+        </div>
+        ${ARCH
+          ? html`<${Block} title="Import Linter contracts" count=${(ARCH.contracts || []).length}>
+              ${ARCH.error && html`<p class="alert">${ARCH.error}</p>`}
+              <p class="hint">Loaded from ${ARCH.source || "the project"}. Contract definitions are displayed, not reimplemented.</p>
+              <ul class="list">${(ARCH.contracts || []).map((contract) =>
+                html`<li class="matrix-contract"><b>${contract.name || "Unnamed contract"}</b>
+                  <span class="meta">${contract.type || "custom"}</span>
+                  ${contract.type === "layers" && html`<div class="matrix-layers">${(contract.layers || []).map((layer) => html`<div>${layer}</div>`)}</div>`}
+                </li>`)}</ul>
+              <p class="hint">Use <code>lint-imports</code> for authoritative contract results. This matrix does not independently flag violations.</p>
+            </${Block}>`
+          : html`<p class="hint">No Import Linter configuration found. Package ordering is alphabetical.</p>`}
+        ${check && html`<${Block} title="Import Linter check">
+          <p><b>${check.status}</b> ${check.command || ""}</p>
+          <pre class="matrix-output">${check.output || ""}</pre>
+        </${Block}>`}
+      </div>`;
+    }
+    const cell = matrix.cells.get(selected.from + "\n" + selected.to);
+    if (!cell) return null;
+    const imports = showAll ? cell.imports : cell.imports.slice(0, 100);
+    return html`<div class="pad">
+      <h2>${selected.from} → ${selected.to}</h2>
+      <p class="hint">${plural(cell.count, "direct module import")}; ${cell.typeOnly} type-only.</p>
+      <button class="btn" onClick=${() => onModule(cell.imports[0].source)}>Show on map</button>
+      <${Block} title="Module relationships" count=${cell.count}>
+        <ul class="list">${imports.map((e) => html`<li class="matrix-import-row">
+          <button class="matrix-module" title="View importer on map" onClick=${() => onModule(e.source)}>${e.source}</button>
+          <span>→</span>
+          <button class="matrix-module" title="View imported module on map" onClick=${() => onModule(e.target)}>${e.target}</button>
+          ${e.attrs?.type_only && html`<span class="meta">types only</span>`}
+        </li>`)}</ul>
+        ${cell.imports.length > 100 && html`<button class="btn" onClick=${() => setShowAll(!showAll)}>
+          ${showAll ? "Show fewer" : "Show all " + cell.imports.length}
+        </button>`}
+      </${Block}>
+    </div>`;
+  }
+
   // Inspector ------------------------------------------------------------------------
 
   function Row({ id, name, meta, kind, onSelect, badge }) {
@@ -1440,6 +1612,8 @@
 
   function App() {
     const [expanded, setExpanded] = useState(initialExpanded);
+    const [presentation, setPresentation] = useState("map");
+    const [matrixCell, setMatrixCell] = useState(null);
     const [mode, setMode] = useState("imports");
     const [layouts, setLayouts] = useState({ imports: "free", calls: "layers" });
     const layoutMode = layouts[mode];
@@ -1497,7 +1671,15 @@
     }, []);
 
     const onMapSelect = useCallback((id) => select(id, false), [select]);
-    const onListSelect = useCallback((id) => select(id, true), [select]);
+    const onListSelect = useCallback((id) => {
+      setPresentation("map");
+      select(id, true);
+    }, [select]);
+    const onMatrixModule = useCallback((id) => {
+      setPresentation("map");
+      setMode("imports");
+      select(id, true);
+    }, [select]);
 
     const toggle = useCallback((id) => {
       setExpanded((prev) => {
@@ -1536,6 +1718,10 @@
         <div class="spacer"></div>
         <${SearchBox} onPick=${onListSelect} />
         <div class="controls">
+          <div class="seg" role="group" aria-label="Visualization">
+            <button aria-pressed=${presentation === "map"} onClick=${() => setPresentation("map")}>Map</button>
+            <button aria-pressed=${presentation === "matrix"} onClick=${() => setPresentation("matrix")}>Matrix</button>
+          </div>
           <div class="seg" role="group" aria-label="Arrows show">
             <button aria-pressed=${mode === "imports"} onClick=${() => setMode("imports")}>Imports</button>
             <button aria-pressed=${mode === "calls"} onClick=${() => setMode("calls")}>Calls</button>
@@ -1568,6 +1754,7 @@
       </header>
       <div class="main">
         <div class="canvas-wrap">
+          <div class="graph-layer" style=${presentation === "matrix" ? "visibility:hidden;pointer-events:none" : ""}>
           ${totalModules === 0
             ? html`<div class="empty-map">No Python files were found in this repository.</div>`
             : html`<${GraphView}
@@ -1581,13 +1768,15 @@
                 onToggle=${toggle}
                 onBusy=${setBusy}
               />`}
-          <div class="overlay tools">
+          </div>
+          ${presentation === "matrix" && html`<${MatrixView} matrix=${MATRIX} selected=${matrixCell} onCell=${setMatrixCell} />`}
+          <div class="overlay tools" hidden=${presentation === "matrix"}>
             <button class="btn" onClick=${() => setFitTick((t) => t + 1)} title="Fit the whole map on screen">Fit</button>
             <button class="btn" disabled=${totalModules > MAX_EXPAND_ALL} title=${totalModules > MAX_EXPAND_ALL ? "Too many files to show at once; open folders one by one" : "Open every folder"} onClick=${() => setExpanded(allFolders())}>Expand all</button>
             <button class="btn" onClick=${() => setExpanded(new Set())}>Collapse all</button>
           </div>
-          ${busy && html`<div class="busy">Arranging…</div>`}
-          ${DIFF
+          ${presentation === "map" && busy && html`<div class="busy">Arranging…</div>`}
+          ${presentation === "map" && DIFF
             ? html`<div class="legend" aria-label="Legend">
                 <span><i class="sw st-added"></i>+ Added</span>
                 <span><i class="sw st-changed"></i>~ Changed</span>
@@ -1596,7 +1785,7 @@
                 <span><i class="sw" style="opacity:.4"></i>Unchanged</span>
               </div>`
             : null}
-          <div class="legend" aria-label="Legend" hidden=${!!DIFF}>
+          <div class="legend" aria-label="Legend" hidden=${presentation !== "map" || !!DIFF}>
             <span><i class="sw"></i>Python file</span>
             <span><i class="sw folder"></i>Folder (double-click)</span>
             <span><i class="sw entry"></i>Entry point</span>
@@ -1607,13 +1796,14 @@
           </div>
         </div>
         <aside class="inspector" ref=${inspector} aria-label="Details">
-          ${!selected && (DIFF ? html`<${ChangesPanel} onSelect=${onListSelect} />` : html`<${Welcome} onSelect=${onListSelect} />`)}
-          ${selected && selected.startsWith("ghost:") && html`<${GhostCard} id=${selected} onSelect=${onListSelect} />`}
-          ${kind === "module" && html`<${ModuleCard} id=${selected} onSelect=${onListSelect} onCode=${(p, l, e) => setCode({ path: p, line: l, end: e })} onCenter=${center} mutedNodes=${mutedNodes} onToggleMuted=${toggleMuted} />`}
-          ${SYMBOL.has(kind) && html`<${SymbolCard} id=${selected} onSelect=${onListSelect} onCode=${(p, l, e) => setCode({ path: p, line: l, end: e })} onCenter=${center} />`}
-          ${kind === "directory" && html`<${FolderCard} id=${selected} expanded=${expanded} onSelect=${onListSelect} onToggle=${toggle} onCenter=${center} mutedNodes=${mutedNodes} onToggleMuted=${toggleMuted} />`}
-          ${kind === "external" && html`<${ExternalCard} id=${selected} onSelect=${onListSelect} mutedNodes=${mutedNodes} onToggleMuted=${toggleMuted} />`}
-          ${code && html`<${CodePanel} ...${code} onClose=${() => setCode(null)} />`}
+          ${presentation === "matrix" && html`<${MatrixInspector} matrix=${MATRIX} selected=${matrixCell} onModule=${onMatrixModule} />`}
+          ${presentation === "map" && !selected && (DIFF ? html`<${ChangesPanel} onSelect=${onListSelect} />` : html`<${Welcome} onSelect=${onListSelect} />`)}
+          ${presentation === "map" && selected && selected.startsWith("ghost:") && html`<${GhostCard} id=${selected} onSelect=${onListSelect} />`}
+          ${presentation === "map" && kind === "module" && html`<${ModuleCard} id=${selected} onSelect=${onListSelect} onCode=${(p, l, e) => setCode({ path: p, line: l, end: e })} onCenter=${center} mutedNodes=${mutedNodes} onToggleMuted=${toggleMuted} />`}
+          ${presentation === "map" && SYMBOL.has(kind) && html`<${SymbolCard} id=${selected} onSelect=${onListSelect} onCode=${(p, l, e) => setCode({ path: p, line: l, end: e })} onCenter=${center} />`}
+          ${presentation === "map" && kind === "directory" && html`<${FolderCard} id=${selected} expanded=${expanded} onSelect=${onListSelect} onToggle=${toggle} onCenter=${center} mutedNodes=${mutedNodes} onToggleMuted=${toggleMuted} />`}
+          ${presentation === "map" && kind === "external" && html`<${ExternalCard} id=${selected} onSelect=${onListSelect} mutedNodes=${mutedNodes} onToggleMuted=${toggleMuted} />`}
+          ${presentation === "map" && code && html`<${CodePanel} ...${code} onClose=${() => setCode(null)} />`}
         </aside>
       </div>
     </div>`;

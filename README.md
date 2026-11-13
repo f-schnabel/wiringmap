@@ -82,6 +82,37 @@ folder ignores itself, so it is never committed by accident.
 - **Big projects work too.** pandas (1,411 files) scans in under 8 seconds, and its
   report opens in under one.
 
+## Dependency matrix and Import Linter
+
+Switch from **Map** to **Matrix** in the report toolbar. Rows are importing packages;
+columns are imported packages. Cells show counts of **direct module imports**, including
+type-only imports; click any non-empty cell to see its exact importer and imported modules.
+Click a module in the inspector to return to the map focused on that file.
+
+Wiringmap automatically discovers Import Linter configuration from `setup.cfg`,
+`.importlinter`, or `pyproject.toml`. When available, its **root package** scopes
+the matrix and its **Layers** contract determines package ordering. The inspector
+shows the configured contracts, including protected interfaces, forbidden imports,
+and independence constraints. The matrix does **not** independently implement
+these contracts or claim that individual cells violate them; the heatmap indicates
+import counts only.
+
+To include an authoritative Import Linter check, run:
+
+```bash
+wiringmap build . --check-imports --open
+```
+
+This option runs `lint-imports` using the project environment and embeds its exit
+status and diagnostic output in the offline report. It is opt-in: ordinary
+`wiringmap build` does not run Import Linter or modify the project's environment.
+If `lint-imports` is not on the path, wiringmap tries
+`uv run --no-sync lint-imports`. Install Import Linter into the project's own
+environment before using this option.
+
+This is *architecture context plus actual checker output*, not a second implementation
+of Import Linter's rules. A stale report reflects the state when it was generated.
+
 ## See what your AI agent changed
 
 After an agent has edited your code, ask what changed in the *structure*, not just
