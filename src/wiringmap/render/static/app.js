@@ -264,7 +264,7 @@
     return links.filter((l) => kept.has(l));
   }
 
-  function buildView(expanded, mode, showExternal, mutedNodes, hideTransitive = false) {
+  function buildView(expanded, mode, showExternal, mutedNodes, hideTransitive = false, sizeByConnections = false, markCycles = true) {
     // Suppress individual module relationships *before* folding them into folder edges.
     // This preserves unrelated arrows when a folder contains both muted and active files.
     const mutedModules = new Set();
@@ -283,7 +283,7 @@
       rep.set(id, id);
       elements.push({
         group: "nodes",
-        data: { id, parent, label, kind: "module", entry, st, dim: !!DIFF && !st, muted: mutedModules.has(id), error: !!(n.attrs && n.attrs.parse_error), w: labelWidth(label) },
+        data: { id, parent, label, kind: "module", entry, st, dim: !!DIFF && !st, muted: mutedModules.has(id), cycle: markCycles && mode === "imports" && IMPORT_CYCLES.byModule.has(id), error: !!(n.attrs && n.attrs.parse_error), w: labelWidth(label) },
       });
     }
 
@@ -306,7 +306,7 @@
       const count = pyCount.get(id);
       const changes = changesUnder.get(id) || 0;
       const text = `${label}/\n${plural(count, "module")}${changes ? ` · ${changes} changed` : ""}`;
-      elements.push({ group: "nodes", data: { id, parent, label: text, kind: "folder", chg: changes > 0, dim: !!DIFF && !changes, muted, w: labelWidth(text) } });
+      elements.push({ group: "nodes", data: { id, parent, label: text, kind: "folder", chg: changes > 0, dim: !!DIFF && !changes, muted, cycle: markCycles && mode === "imports" && IMPORT_CYCLES.folders.has(id), w: labelWidth(text) } });
       forEachModule(id, (m) => rep.set(m, id));
     }
 
@@ -314,20 +314,22 @@
     addGhosts(ROOT, undefined);
 
     const links = new Map();
-    const link = (s, t, typeOnly) => {
+    const link = (s, t, typeOnly, cycle = false) => {
       if (!s || !t || s === t) return;
       const key = s + "\n" + t;
       let l = links.get(key);
-      if (!l) links.set(key, (l = { s, t, n: 0, typeOnly: true }));
+      if (!l) links.set(key, (l = { s, t, n: 0, typeOnly: true, cycle: false }));
       l.n += 1;
       l.typeOnly = l.typeOnly && typeOnly;
+      l.cycle = l.cycle || cycle;
     };
 
     if (mode === "imports") {
       for (const [src, list] of out.imports)
         for (const e of list)
           if (kindOf(e.target) === "module" && !mutedModules.has(src) && !mutedModules.has(e.target))
-            link(rep.get(src), rep.get(e.target), !!(e.attrs && e.attrs.type_only));
+            link(rep.get(src), rep.get(e.target), !!(e.attrs && e.attrs.type_only),
+              markCycles && IMPORT_CYCLES.edges.has(src + "\n" + e.target));
     } else {
       for (const [src, list] of out.calls)
         for (const e of list) {
@@ -354,12 +356,31 @@
     }
 
     const visibleLinks = [...links.values()];
+    // Importance is based on distinct direct neighbors, before transitive
+    // reduction, so changing that visibility filter does not resize nodes.
+    const neighbors = new Map();
+    for (const l of visibleLinks) {
+      if (!neighbors.has(l.s)) neighbors.set(l.s, new Set());
+      if (!neighbors.has(l.t)) neighbors.set(l.t, new Set());
+      neighbors.get(l.s).add(l.t);
+      neighbors.get(l.t).add(l.s);
+    }
+    for (const item of elements) {
+      if (item.group !== "nodes" || item.data.kind === "group" || item.data.id.startsWith("ghost:")) continue;
+      const count = neighbors.get(item.data.id)?.size || 0;
+      item.data.connections = count;
+      if (sizeByConnections) {
+        const growth = Math.min(40, Math.round(Math.log2(1 + count) * 7));
+        item.data.w += growth;
+        item.data.h = (item.data.kind === "folder" ? 44 : 28) + Math.min(24, Math.round(growth * 0.55));
+      }
+    }
     const renderedLinks = mode === "imports" && hideTransitive
       ? reduceTransitiveLinks(visibleLinks) : visibleLinks;
     for (const l of renderedLinks)
       elements.push({
         group: "edges",
-        data: { id: `e:${l.s}->${l.t}`, source: l.s, target: l.t, n: l.n, typeOnly: l.typeOnly, w: Math.min(1 + Math.log2(l.n), 5) },
+        data: { id: `e:${l.s}->${l.t}`, source: l.s, target: l.t, n: l.n, typeOnly: l.typeOnly, cycle: l.cycle, w: Math.min(1 + Math.log2(l.n), 5) },
       });
 
     return {
