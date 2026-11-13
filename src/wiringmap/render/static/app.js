@@ -1396,7 +1396,7 @@
     </${Block}>`;
   }
 
-  function ModuleCard({ id, onSelect, onCode, onCenter, mutedNodes, onToggleMuted }) {
+  function ModuleCard({ id, onSelect, onCode, onCenter, onFocus, mutedNodes, onToggleMuted }) {
     const n = nodes.get(id);
     const a = n.attrs || {};
     const uses = (out.imports.get(id) || []).filter((e) => kindOf(e.target) === "module");
@@ -1425,6 +1425,7 @@
       <div class="actions">
         ${SOURCES[n.path] !== undefined && html`<button class="btn" onClick=${() => onCode(n.path, 1, 0)}>View source</button>`}
         <button class="btn" onClick=${onCenter}>Show on map</button>
+        <button class="btn" title="Show this module and its immediate import/call neighbors" onClick=${() => onFocus(id)}>Focus module</button>
         <${EdgeToggle} id=${id} mutedNodes=${mutedNodes} onToggleMuted=${onToggleMuted} />
       </div>
       ${cycle.length > 0 && html`<${Block} title="Static import cycle" count=${cycle.length}>
@@ -1516,7 +1517,7 @@
     </div>`;
   }
 
-  function FolderCard({ id, expanded, onSelect, onToggle, onCenter, mutedNodes, onToggleMuted }) {
+  function FolderCard({ id, expanded, onSelect, onToggle, onCenter, onFocus, mutedNodes, onToggleMuted }) {
     const n = nodes.get(id);
     const list = displayKids(id);
     const open = expanded.has(compact(id).id);
@@ -1534,6 +1535,7 @@
       <div class="actions">
         <button class="btn" onClick=${() => onToggle(compact(id).id)}>${open ? "Collapse on map" : "Open on map"}</button>
         <button class="btn" onClick=${onCenter}>Show on map</button>
+        <button class="btn" title="Show only this folder and its internal module connections" onClick=${() => onFocus(id)}>Focus folder</button>
         <${EdgeToggle} id=${id} mutedNodes=${mutedNodes} onToggleMuted=${onToggleMuted} />
       </div>
       <${Block} title="Inside" count=${list.length}>
@@ -1682,6 +1684,7 @@
       <p>A map of how this code is wired, made by wiringmap ${G.generator.version}${when ? " on " + when : ""}.</p>
       <ol>
         <li><b>Left-drag</b> pans anywhere, <b>right-drag a box</b> moves it. Lines never intercept clicks.</li>
+        <li><b>Focus folder</b> shows only the folder's modules and their internal connections; <b>Focus module</b> shows its direct neighbors. <b>Show all</b> restores the full graph without rescanning.</li>
         <li><b>Boxes are Python files.</b> Dashed boxes are folders: double-click one to open it.</li>
         <li><b>Arrows point to what a file imports.</b> Switch to “Calls” for call relationships. Calls start in a top-down layout; select “Top down” for Imports too.</li>
         <li><b>Fit</b> reframes the entire graph; expanding or collapsing folders preserves the current camera.</li>
@@ -1743,6 +1746,7 @@
     const [expanded, setExpanded] = useState(initialExpanded);
     const [presentation, setPresentation] = useState("map");
     const [matrixCell, setMatrixCell] = useState(null);
+    const [focusScope, setFocusScope] = useState(null);
     const [mode, setMode] = useState("imports");
     const [layouts, setLayouts] = useState({ imports: "free", calls: "layers" });
     const layoutMode = layouts[mode];
@@ -1769,8 +1773,8 @@
     }, [theme]);
 
     const view = useMemo(
-      () => buildView(expanded, mode, showExternal, mutedNodes, hideTransitive, sizeByConnections, markCycles),
-      [expanded, mode, showExternal, mutedNodes, hideTransitive, sizeByConnections, markCycles]
+      () => buildView(expanded, mode, showExternal, mutedNodes, hideTransitive, sizeByConnections, markCycles, focusScope),
+      [expanded, mode, showExternal, mutedNodes, hideTransitive, sizeByConnections, markCycles, focusScope]
     );
 
     const focus = useMemo(() => {
@@ -1801,14 +1805,41 @@
 
     const onMapSelect = useCallback((id) => select(id, false), [select]);
     const onListSelect = useCallback((id) => {
+      if (focusScope && id) {
+        const allowed = focusModules(focusScope, mode);
+        let visible = allowed?.has(moduleOf(id));
+        if (!visible && isDir(id)) forEachModule(id, (module) => {
+          if (allowed?.has(module)) visible = true;
+        });
+        if (!visible) setFocusScope(null);
+      }
       setPresentation("map");
       select(id, true);
-    }, [select]);
+    }, [select, focusScope, mode]);
     const onMatrixModule = useCallback((id) => {
+      setFocusScope(null);
       setPresentation("map");
       setMode("imports");
       select(id, true);
     }, [select]);
+
+    const focusOn = useCallback((id) => {
+      const scope = isDir(id) ? compact(id).id : moduleOf(id);
+      const subset = focusModules(scope, mode);
+      if (!scope || !subset?.size) return;
+      const openDirs = new Set();
+      if (subset.size <= 85) for (const mod of subset)
+        for (const dir of dirsAbove(mod)) openDirs.add(compact(dir).id);
+      else if (isDir(scope)) for (const dir of [scope, ...dirsAbove(scope)])
+        openDirs.add(compact(dir).id);
+      else for (const dir of dirsAbove(scope)) openDirs.add(compact(dir).id);
+      setExpanded((current) => new Set([...current, ...openDirs]));
+      setFocusScope(scope);
+      setSelected(scope);
+      setCode(null);
+      setShowExternal(false);
+      setPresentation("map");
+    }, [mode]);
 
     const toggle = useCallback((id) => {
       setExpanded((prev) => {
@@ -1900,6 +1931,9 @@
           </div>
           ${presentation === "matrix" && html`<${MatrixView} matrix=${MATRIX} selected=${matrixCell} onCell=${setMatrixCell} />`}
           <div class="overlay tools" hidden=${presentation === "matrix"}>
+            ${focusScope && html`<span class="focus-label" title=${focusScope}>
+              Focus: ${nodes.get(focusScope)?.name || focusScope}
+            </span><button class="btn" onClick=${() => setFocusScope(null)}>Show all</button>`}
             <button class="btn" onClick=${() => setFitTick((t) => t + 1)} title="Fit the whole map on screen">Fit</button>
             <button class="btn" disabled=${totalModules > MAX_EXPAND_ALL} title=${totalModules > MAX_EXPAND_ALL ? "Too many files to show at once; open folders one by one" : "Open every folder"} onClick=${() => setExpanded(allFolders())}>Expand all</button>
             <button class="btn" onClick=${() => setExpanded(new Set())}>Collapse all</button>
@@ -1928,9 +1962,9 @@
           ${presentation === "matrix" && html`<${MatrixInspector} matrix=${MATRIX} selected=${matrixCell} onModule=${onMatrixModule} />`}
           ${presentation === "map" && !selected && (DIFF ? html`<${ChangesPanel} onSelect=${onListSelect} />` : html`<${Welcome} onSelect=${onListSelect} />`)}
           ${presentation === "map" && selected && selected.startsWith("ghost:") && html`<${GhostCard} id=${selected} onSelect=${onListSelect} />`}
-          ${presentation === "map" && kind === "module" && html`<${ModuleCard} id=${selected} onSelect=${onListSelect} onCode=${(p, l, e) => setCode({ path: p, line: l, end: e })} onCenter=${center} mutedNodes=${mutedNodes} onToggleMuted=${toggleMuted} />`}
+          ${presentation === "map" && kind === "module" && html`<${ModuleCard} id=${selected} onFocus=${focusOn} onSelect=${onListSelect} onCode=${(p, l, e) => setCode({ path: p, line: l, end: e })} onCenter=${center} mutedNodes=${mutedNodes} onToggleMuted=${toggleMuted} />`}
           ${presentation === "map" && SYMBOL.has(kind) && html`<${SymbolCard} id=${selected} onSelect=${onListSelect} onCode=${(p, l, e) => setCode({ path: p, line: l, end: e })} onCenter=${center} />`}
-          ${presentation === "map" && kind === "directory" && html`<${FolderCard} id=${selected} expanded=${expanded} onSelect=${onListSelect} onToggle=${toggle} onCenter=${center} mutedNodes=${mutedNodes} onToggleMuted=${toggleMuted} />`}
+          ${presentation === "map" && kind === "directory" && html`<${FolderCard} id=${selected} onFocus=${focusOn} expanded=${expanded} onSelect=${onListSelect} onToggle=${toggle} onCenter=${center} mutedNodes=${mutedNodes} onToggleMuted=${toggleMuted} />`}
           ${presentation === "map" && kind === "external" && html`<${ExternalCard} id=${selected} onSelect=${onListSelect} mutedNodes=${mutedNodes} onToggleMuted=${toggleMuted} />`}
           ${presentation === "map" && code && html`<${CodePanel} ...${code} onClose=${() => setCode(null)} />`}
         </aside>
