@@ -50,9 +50,16 @@ def read_importlinter(root: Path) -> dict[str, Any] | None:
                         continue
                     item = dict(parser.items(section))
                     item.setdefault("id", section.removeprefix("importlinter:contract:"))
-                    for key in ("layers", "containers", "source_modules", "forbidden_modules",
-                                "protected_modules", "allowed_importers", "modules",
-                                "ignore_imports"):
+                    for key in (
+                        "layers",
+                        "containers",
+                        "source_modules",
+                        "forbidden_modules",
+                        "protected_modules",
+                        "allowed_importers",
+                        "modules",
+                        "ignore_imports",
+                    ):
                         if key in item:
                             item[key] = [v.strip() for v in item[key].splitlines() if v.strip()]
                     contracts.append(item)
@@ -95,8 +102,14 @@ def check_importlinter(root: Path, configuration: dict[str, Any]) -> dict[str, A
         }
     try:
         result = subprocess.run(
-            command, cwd=root, capture_output=True, text=True, encoding="utf-8",
-            errors="replace", timeout=120, check=False,
+            command,
+            cwd=root,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=120,
+            check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return {"status": "error", "output": str(exc)}
