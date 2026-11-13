@@ -44,6 +44,10 @@ folder ignores itself, so it is never committed by accident.
 
 ## What you get
 
+- **Pan and move separately.** Pan mode is the default: drag on background, nodes,
+  or arrows to move the viewport. Switch to **Move nodes** to reposition files and
+  folders; dragging background or arrows still pans. Arrows are never selectable,
+  and clicking nodes still opens their details.
 - **A map of the whole project.** Files are boxes inside their folders, and arrows show
   imports. Switch to **Calls** to see which files call into which; thicker arrows mean
   more calls. Calls start in a **Top down** layout (callers above callees).
