@@ -232,6 +232,34 @@ code, pre, .mono { font-family: var(--mono); font-size: 12.5px; }
   background: var(--panel); border: 1px solid var(--border);
   border-radius: var(--radius);
 }
+
+.matrix-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.matrix-row-name { display: flex; align-items: center; min-height: 29px; }
+.matrix-tree-toggle, .matrix-leaf {
+  display: inline-flex; align-items: center; gap: 4px; min-width: 0;
+  color: var(--text); font: 600 11.5px var(--sans); white-space: nowrap;
+}
+.matrix-tree-toggle {
+  cursor: pointer; padding: 3px 5px; border: 1px solid transparent;
+  background: none; border-radius: 4px; text-align: left;
+}
+.matrix-tree-toggle:hover { background: var(--accent-weak); }
+.matrix-tree-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.matrix-chevron { display: inline-block; width: 12px; flex-shrink: 0; color: var(--accent-text); font-size: 12px; }
+.matrix-file-mark { width: 12px; flex-shrink: 0; color: var(--muted); }
+.matrix-node-name { overflow: hidden; text-overflow: ellipsis; }
+.matrix-table thead .matrix-tree-toggle,
+.matrix-table thead .matrix-leaf { max-width: 110px; }
+.matrix-table tbody th .matrix-tree-toggle,
+.matrix-table tbody th .matrix-leaf { max-width: 235px; }
+.matrix-table tbody th { min-width: 160px; }
+.matrix-table tbody tr.matrix-group-open > th {
+  background: color-mix(in srgb, var(--accent) 12%, var(--panel-2));
+}
+.matrix-table tbody tr.matrix-group-open > td:not(.matrix-diagonal) {
+  background: color-mix(in srgb, var(--accent) 4%, var(--panel));
+}
+.matrix-table tbody tr.matrix-group-open .matrix-empty { visibility: hidden; }
 .matrix-scroll { max-height: calc(100% - 112px); overflow: auto; border: 1px solid var(--border); border-radius: 7px; }
 .matrix-table {
   border-collapse: separate; border-spacing: 0;
