@@ -852,11 +852,12 @@
     return () => canvas.removeEventListener("contextmenu", preventMenu);
   }
 
-  function GraphView({ view, focus, centerTick, theme, fitTick, layoutMode, onSelect, onToggle, onBusy }) {
+  function GraphView({ view, focus, centerTick, theme, fitTick, layoutMode, focusScope, onSelect, onToggle, onBusy }) {
     const box = useRef(null);
     const cyRef = useRef(null);
     const positions = useRef(new Map());
     const previousLayout = useRef(null);
+    const previousScope = useRef(null);
     const hasLaidOut = useRef(false);
     const handlers = useRef({});
     handlers.current = { onSelect, onToggle };
@@ -898,7 +899,9 @@
       });
       const sameNodes = before.size === view.nodeIds.size && [...before].every((id) => view.nodeIds.has(id));
       const layoutChanged = previousLayout.current !== layoutMode;
+      const scopeChanged = previousScope.current !== focusScope;
       previousLayout.current = layoutMode;
+      previousScope.current = focusScope;
       if (sameNodes) {
         const shown = new Map(view.elements.filter((e) => e.group === "nodes").map((e) => [e.data.id, e.data]));
         const resized = cy.nodes().toArray().some((n) =>
@@ -920,9 +923,9 @@
         });
         // Recoloring cycles does not move nodes. Edge changes only relayout the
         // top-down view; the free layout keeps manually adjusted positions.
-        if (!layoutChanged && !resized && (layoutMode !== "layers" || !edgesChanged)) return;
+        if (!scopeChanged && !layoutChanged && !resized && (layoutMode !== "layers" || !edgesChanged)) return;
         onBusy(true);
-        const timer = setTimeout(() => arrange(cy, false, () => onBusy(false), layoutMode), 30);
+        const timer = setTimeout(() => arrange(cy, false, () => onBusy(false), layoutMode, scopeChanged), 30);
         return () => clearTimeout(timer);
       }
 
@@ -945,12 +948,12 @@
       // A timer, not requestAnimationFrame: it lets "Arranging…" paint first, and it
       // still runs when the report was opened in a background tab.
       const timer = setTimeout(() => {
-        const autoFit = !hasLaidOut.current;
+        const autoFit = !hasLaidOut.current || scopeChanged;
         hasLaidOut.current = true;
         arrange(cy, placed === 0, () => onBusy(false), layoutMode, autoFit);
       }, 30);
       return () => clearTimeout(timer);
-    }, [view, layoutMode]);
+    }, [view, layoutMode, focusScope]);
 
     useEffect(() => {
       const cy = cyRef.current;
@@ -1778,7 +1781,7 @@
     );
 
     const focus = useMemo(() => {
-      if (!selected) return null;
+      if (!selected || (focusScope && selected === focusScope)) return null;
       const mod = moduleOf(selected);
       if (mod) return view.rep.get(mod) || null;
       if (view.nodeIds.has(selected)) return selected;
@@ -1788,7 +1791,7 @@
         for (const a of ancestorsOf(selected)) if (view.nodeIds.has(a)) return a;
       }
       return null;
-    }, [selected, view]);
+    }, [selected, view, focusScope]);
 
     const select = useCallback((id, reveal) => {
       setCode(null);
@@ -1923,6 +1926,7 @@
                 centerTick=${centerTick}
                 fitTick=${fitTick}
                 layoutMode=${layoutMode}
+                focusScope=${focusScope}
                 theme=${theme}
                 onSelect=${onMapSelect}
                 onToggle=${toggle}
