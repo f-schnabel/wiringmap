@@ -828,6 +828,7 @@
     const isPrimaryMouse = (event) => {
       const native = event.originalEvent;
       return native?.pointerType !== "touch" &&
+        !native?.type?.startsWith("touch") &&
         !native?.touches?.length &&
         (native?.button === undefined || native.button === 0);
     };
@@ -870,7 +871,8 @@
     };
     const onRelease = (event) => {
       // Apply the final delta even if the cursor left the graph.
-      if (drag && event.clientX !== undefined) onMove({ ...event, buttons: 1 });
+      if (drag && event.clientX !== undefined)
+        onMove({ clientX: event.clientX, clientY: event.clientY, buttons: 1 });
       finish(true);
     };
 
