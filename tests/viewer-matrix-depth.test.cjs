@@ -14,7 +14,7 @@ test("leaf modules do not render a misleading expandability dot", () => {
 });
 
 test("row and column headers carry the corresponding hierarchy depth", () => {
-  assert.match(app, /"matrix-depth-" \+ Math\.min\(5, entry\.depth\)/);
+  assert.match(app, /"matrix-column-head matrix-depth-" \+ Math\.min\(5, entry\.depth\)/);
   assert.match(app, /"matrix-depth-" \+ Math\.min\(5, from\.depth\)/);
 });
 
