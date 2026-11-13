@@ -48,11 +48,14 @@ def collect_sources(root: Path, graph: CodeGraph, limit: int | None = SOURCE_BUD
 
 
 def render_report(
-    graph: CodeGraph, sources: dict[str, str] | None = None, diff: GraphDiff | None = None
+    graph: CodeGraph, sources: dict[str, str] | None = None, diff: GraphDiff | None = None,
+    architecture: dict | None = None,
 ) -> str:
     """The report page; with ``diff``, the map also shows what changed."""
     template = (STATIC / "report.html").read_text(encoding="utf-8")
     payload = {"graph": graph.to_dict(), "sources": sources or {}}
+    if architecture is not None:
+        payload["architecture"] = architecture
     if diff is not None:
         payload["diff"] = diff.to_dict()
     slots = {
