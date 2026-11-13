@@ -577,18 +577,18 @@
   }
 
   // Lay out the map and glide to new positions.
-  function arrange(cy, randomize, done, layoutMode) {
+  function arrange(cy, randomize, done, layoutMode, autoFit = false) {
     const leaves = cy.nodes().filter((n) => !n.isParent());
     const start = new Map(leaves.map((n) => [n.id(), { ...n.position() }]));
     if (layoutMode === "layers") {
       const targets = layeredPositions(cy);
       leaves.forEach((n) => n.position(targets.get(n.id())));
-      const viewport = fittedViewport(cy);
-      if (randomize || leaves.length > 350) cy.viewport(viewport);
-      else {
+      // Fitting is deliberately only automatic on the first render.
+      // Expanding a folder or changing filters must not change zoom or pan.
+      if (autoFit) cy.viewport(fittedViewport(cy));
+      else if (!randomize && leaves.length <= 350) {
         leaves.forEach((n) => n.position(start.get(n.id())));
         leaves.forEach((n) => n.animate({ position: targets.get(n.id()) }, { duration: 360, easing: "ease-in-out-cubic" }));
-        cy.animate(viewport, { duration: 360, easing: "ease-in-out-cubic" });
       }
       done();
       return;
@@ -597,14 +597,11 @@
     layout.one("layoutstop", () => {
       separate(cy);
       packComponents(cy);
-      const view = fittedViewport(cy);
-      if (randomize || leaves.length > 350) {
-        cy.viewport(view);
-      } else {
+      if (autoFit) cy.viewport(fittedViewport(cy));
+      else if (!randomize && leaves.length <= 350) {
         const end = new Map(leaves.map((n) => [n.id(), { ...n.position() }]));
         leaves.forEach((n) => n.position(start.get(n.id())));
         leaves.forEach((n) => n.animate({ position: end.get(n.id()) }, { duration: 360, easing: "ease-in-out-cubic" }));
-        cy.animate(view, { duration: 360, easing: "ease-in-out-cubic" });
       }
       done();
     });
@@ -699,6 +696,7 @@
     const cyRef = useRef(null);
     const positions = useRef(new Map());
     const previousLayout = useRef(null);
+    const hasLaidOut = useRef(false);
     const handlers = useRef({});
     handlers.current = { onSelect, onToggle };
 
@@ -770,7 +768,11 @@
       onBusy(true);
       // A timer, not requestAnimationFrame: it lets "Arranging…" paint first, and it
       // still runs when the report was opened in a background tab.
-      const timer = setTimeout(() => arrange(cy, placed === 0, () => onBusy(false), layoutMode), 30);
+      const timer = setTimeout(() => {
+        const autoFit = !hasLaidOut.current;
+        hasLaidOut.current = true;
+        arrange(cy, placed === 0, () => onBusy(false), layoutMode, autoFit);
+      }, 30);
       return () => clearTimeout(timer);
     }, [view, layoutMode]);
 
@@ -803,7 +805,7 @@
       const cy = cyRef.current;
       if (!cy || !centerTick || !focus) return;
       const node = cy.getElementById(focus);
-      if (node.nonempty()) cy.animate({ center: { eles: node }, zoom: Math.max(cy.zoom(), 0.9) }, { duration: 320 });
+      if (node.nonempty()) cy.animate({ center: { eles: node } }, { duration: 320 });
     }, [centerTick]);
 
     useEffect(() => {
