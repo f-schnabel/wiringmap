@@ -107,6 +107,54 @@
   }
   const dirsAbove = (id) => ancestorsOf(id).filter((a) => isDir(a) && a !== ROOT);
 
+  // Static import cycles include type-only references, which are not necessarily
+  // import-time circularities. Inspect original module edges, not folder aggregates.
+  function importCycles() {
+    const modules = G.nodes.filter((n) => n.kind === "module").map((n) => n.id);
+    const adjacent = new Map(modules.map((id) => [id, new Set()]));
+    for (const e of G.edges)
+      if (e.kind === "imports" && adjacent.has(e.source) && adjacent.has(e.target))
+        adjacent.get(e.source).add(e.target);
+
+    const indices = new Map(), low = new Map(), active = new Set(), stack = [], groups = [];
+    let index = 0;
+    function visit(id) {
+      indices.set(id, index);
+      low.set(id, index++);
+      active.add(id);
+      stack.push(id);
+      for (const to of adjacent.get(id)) {
+        if (!indices.has(to)) {
+          visit(to);
+          low.set(id, Math.min(low.get(id), low.get(to)));
+        } else if (active.has(to)) low.set(id, Math.min(low.get(id), indices.get(to)));
+      }
+      if (low.get(id) === indices.get(id)) {
+        const group = [];
+        let member;
+        do {
+          member = stack.pop();
+          active.delete(member);
+          group.push(member);
+        } while (member !== id);
+        if (group.length > 1 || adjacent.get(id).has(id)) groups.push(group.sort());
+      }
+    }
+    for (const id of modules) if (!indices.has(id)) visit(id);
+
+    const byModule = new Map(), folders = new Set(), edges = new Set();
+    for (const group of groups) for (const id of group) {
+      byModule.set(id, group);
+      for (const ancestor of ancestorsOf(id)) if (isDir(ancestor)) folders.add(ancestor);
+    }
+    for (const [from, targets] of adjacent)
+      for (const to of targets)
+        if (byModule.has(from) && byModule.get(from) === byModule.get(to))
+          edges.add(from + "\n" + to);
+    return { groups, byModule, folders, edges };
+  }
+  const IMPORT_CYCLES = importCycles();
+
   const labelWidth = (text) =>
     Math.max(56, Math.max(...String(text).split("\n").map((l) => l.length)) * 7.1 + 24);
 
