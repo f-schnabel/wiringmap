@@ -107,6 +107,54 @@
   }
   const dirsAbove = (id) => ancestorsOf(id).filter((a) => isDir(a) && a !== ROOT);
 
+  // Static import cycles include type-only references, which are not necessarily
+  // import-time circularities. Inspect original module edges, not folder aggregates.
+  function importCycles() {
+    const modules = G.nodes.filter((n) => n.kind === "module").map((n) => n.id);
+    const adjacent = new Map(modules.map((id) => [id, new Set()]));
+    for (const e of G.edges)
+      if (e.kind === "imports" && adjacent.has(e.source) && adjacent.has(e.target))
+        adjacent.get(e.source).add(e.target);
+
+    const indices = new Map(), low = new Map(), active = new Set(), stack = [], groups = [];
+    let index = 0;
+    function visit(id) {
+      indices.set(id, index);
+      low.set(id, index++);
+      active.add(id);
+      stack.push(id);
+      for (const to of adjacent.get(id)) {
+        if (!indices.has(to)) {
+          visit(to);
+          low.set(id, Math.min(low.get(id), low.get(to)));
+        } else if (active.has(to)) low.set(id, Math.min(low.get(id), indices.get(to)));
+      }
+      if (low.get(id) === indices.get(id)) {
+        const group = [];
+        let member;
+        do {
+          member = stack.pop();
+          active.delete(member);
+          group.push(member);
+        } while (member !== id);
+        if (group.length > 1 || adjacent.get(id).has(id)) groups.push(group.sort());
+      }
+    }
+    for (const id of modules) if (!indices.has(id)) visit(id);
+
+    const byModule = new Map(), folders = new Set(), edges = new Set();
+    for (const group of groups) for (const id of group) {
+      byModule.set(id, group);
+      for (const ancestor of ancestorsOf(id)) if (isDir(ancestor)) folders.add(ancestor);
+    }
+    for (const [from, targets] of adjacent)
+      for (const to of targets)
+        if (byModule.has(from) && byModule.get(from) === byModule.get(to))
+          edges.add(from + "\n" + to);
+    return { groups, byModule, folders, edges };
+  }
+  const IMPORT_CYCLES = importCycles();
+
   const labelWidth = (text) =>
     Math.max(56, Math.max(...String(text).split("\n").map((l) => l.length)) * 7.1 + 24);
 
@@ -216,7 +264,7 @@
     return links.filter((l) => kept.has(l));
   }
 
-  function buildView(expanded, mode, showExternal, mutedNodes, hideTransitive = false) {
+  function buildView(expanded, mode, showExternal, mutedNodes, hideTransitive = false, sizeByConnections = false, markCycles = true) {
     // Suppress individual module relationships *before* folding them into folder edges.
     // This preserves unrelated arrows when a folder contains both muted and active files.
     const mutedModules = new Set();
@@ -235,7 +283,7 @@
       rep.set(id, id);
       elements.push({
         group: "nodes",
-        data: { id, parent, label, kind: "module", entry, st, dim: !!DIFF && !st, muted: mutedModules.has(id), error: !!(n.attrs && n.attrs.parse_error), w: labelWidth(label) },
+        data: { id, parent, label, kind: "module", entry, st, dim: !!DIFF && !st, muted: mutedModules.has(id), cycle: markCycles && mode === "imports" && IMPORT_CYCLES.byModule.has(id), error: !!(n.attrs && n.attrs.parse_error), w: labelWidth(label) },
       });
     }
 
@@ -258,7 +306,7 @@
       const count = pyCount.get(id);
       const changes = changesUnder.get(id) || 0;
       const text = `${label}/\n${plural(count, "module")}${changes ? ` · ${changes} changed` : ""}`;
-      elements.push({ group: "nodes", data: { id, parent, label: text, kind: "folder", chg: changes > 0, dim: !!DIFF && !changes, muted, w: labelWidth(text) } });
+      elements.push({ group: "nodes", data: { id, parent, label: text, kind: "folder", chg: changes > 0, dim: !!DIFF && !changes, muted, cycle: markCycles && mode === "imports" && IMPORT_CYCLES.folders.has(id), w: labelWidth(text) } });
       forEachModule(id, (m) => rep.set(m, id));
     }
 
@@ -266,20 +314,22 @@
     addGhosts(ROOT, undefined);
 
     const links = new Map();
-    const link = (s, t, typeOnly) => {
+    const link = (s, t, typeOnly, cycle = false) => {
       if (!s || !t || s === t) return;
       const key = s + "\n" + t;
       let l = links.get(key);
-      if (!l) links.set(key, (l = { s, t, n: 0, typeOnly: true }));
+      if (!l) links.set(key, (l = { s, t, n: 0, typeOnly: true, cycle: false }));
       l.n += 1;
       l.typeOnly = l.typeOnly && typeOnly;
+      l.cycle = l.cycle || cycle;
     };
 
     if (mode === "imports") {
       for (const [src, list] of out.imports)
         for (const e of list)
           if (kindOf(e.target) === "module" && !mutedModules.has(src) && !mutedModules.has(e.target))
-            link(rep.get(src), rep.get(e.target), !!(e.attrs && e.attrs.type_only));
+            link(rep.get(src), rep.get(e.target), !!(e.attrs && e.attrs.type_only),
+              markCycles && IMPORT_CYCLES.edges.has(src + "\n" + e.target));
     } else {
       for (const [src, list] of out.calls)
         for (const e of list) {
@@ -306,12 +356,31 @@
     }
 
     const visibleLinks = [...links.values()];
+    // Importance is based on distinct direct neighbors, before transitive
+    // reduction, so changing that visibility filter does not resize nodes.
+    const neighbors = new Map();
+    for (const l of visibleLinks) {
+      if (!neighbors.has(l.s)) neighbors.set(l.s, new Set());
+      if (!neighbors.has(l.t)) neighbors.set(l.t, new Set());
+      neighbors.get(l.s).add(l.t);
+      neighbors.get(l.t).add(l.s);
+    }
+    for (const item of elements) {
+      if (item.group !== "nodes" || item.data.kind === "group" || item.data.id.startsWith("ghost:")) continue;
+      const count = neighbors.get(item.data.id)?.size || 0;
+      item.data.connections = count;
+      if (sizeByConnections) {
+        const growth = Math.min(40, Math.round(Math.log2(1 + count) * 7));
+        item.data.w += growth;
+        item.data.h = (item.data.kind === "folder" ? 44 : 28) + Math.min(24, Math.round(growth * 0.55));
+      }
+    }
     const renderedLinks = mode === "imports" && hideTransitive
       ? reduceTransitiveLinks(visibleLinks) : visibleLinks;
     for (const l of renderedLinks)
       elements.push({
         group: "edges",
-        data: { id: `e:${l.s}->${l.t}`, source: l.s, target: l.t, n: l.n, typeOnly: l.typeOnly, w: Math.min(1 + Math.log2(l.n), 5) },
+        data: { id: `e:${l.s}->${l.t}`, source: l.s, target: l.t, n: l.n, typeOnly: l.typeOnly, cycle: l.cycle, w: Math.min(1 + Math.log2(l.n), 5) },
       });
 
     return {
@@ -406,6 +475,7 @@
         },
       },
       { selector: "node[kind = 'external']", style: { "background-opacity": 0, "border-style": "dotted", color: c("--muted") } },
+      { selector: "node[h]", style: { height: "data(h)" } },
       { selector: "node[?entry]", style: { "border-color": c("--ok"), "border-width": 2 } },
       { selector: "node[?error]", style: { "border-color": c("--danger"), "border-style": "dashed", "border-width": 2 } },
       { selector: "node[st = 'added']", style: { "background-color": c("--add-bg"), "border-color": c("--add"), "border-width": 1.5 } },
@@ -416,6 +486,7 @@
       { selector: "node[?chg]", style: { "border-color": c("--chg"), "border-width": 1.5 } },
       { selector: "node[?dim]", style: { opacity: 0.4 } },
       { selector: "node[?muted]", style: { "border-style": "dotted", "border-width": 2, "border-color": c("--faint") } },
+      { selector: "node[?cycle]", style: { "border-color": c("--danger"), "border-width": 2.5 } },
       {
         selector: "edge",
         style: {
@@ -429,6 +500,7 @@
         },
       },
       { selector: "edge[?typeOnly]", style: { "line-style": "dashed" } },
+      { selector: "edge[?cycle]", style: { "line-color": c("--danger"), "target-arrow-color": c("--danger"), opacity: 0.95 } },
       { selector: ".faded", style: { opacity: 0.13 } },
       { selector: "edge.faded", style: { opacity: 0.06 } },
       { selector: "node.nb-out", style: { "border-color": c("--accent"), "border-width": 2 } },
@@ -530,7 +602,7 @@
       const items = children.map((n) => {
         if (n.isParent()) return { id: n.id(), ...place(n) };
         const width = Math.max(70, Number(n.data("w")) || 110);
-        const height = n.data("kind") === "folder" ? 44 : 32;
+        const height = Number(n.data("h")) || (n.data("kind") === "folder" ? 44 : 32);
         return { id: n.id(), width, height, positions: [{ id: n.id(), x: width / 2, y: height / 2 }] };
       });
       const owner = new Map();
@@ -577,18 +649,18 @@
   }
 
   // Lay out the map and glide to new positions.
-  function arrange(cy, randomize, done, layoutMode) {
+  function arrange(cy, randomize, done, layoutMode, autoFit = false) {
     const leaves = cy.nodes().filter((n) => !n.isParent());
     const start = new Map(leaves.map((n) => [n.id(), { ...n.position() }]));
     if (layoutMode === "layers") {
       const targets = layeredPositions(cy);
       leaves.forEach((n) => n.position(targets.get(n.id())));
-      const viewport = fittedViewport(cy);
-      if (randomize || leaves.length > 350) cy.viewport(viewport);
-      else {
+      // Fitting is deliberately only automatic on the first render.
+      // Expanding a folder or changing filters must not change zoom or pan.
+      if (autoFit) cy.viewport(fittedViewport(cy));
+      else if (!randomize && leaves.length <= 350) {
         leaves.forEach((n) => n.position(start.get(n.id())));
         leaves.forEach((n) => n.animate({ position: targets.get(n.id()) }, { duration: 360, easing: "ease-in-out-cubic" }));
-        cy.animate(viewport, { duration: 360, easing: "ease-in-out-cubic" });
       }
       done();
       return;
@@ -597,14 +669,11 @@
     layout.one("layoutstop", () => {
       separate(cy);
       packComponents(cy);
-      const view = fittedViewport(cy);
-      if (randomize || leaves.length > 350) {
-        cy.viewport(view);
-      } else {
+      if (autoFit) cy.viewport(fittedViewport(cy));
+      else if (!randomize && leaves.length <= 350) {
         const end = new Map(leaves.map((n) => [n.id(), { ...n.position() }]));
         leaves.forEach((n) => n.position(start.get(n.id())));
         leaves.forEach((n) => n.animate({ position: end.get(n.id()) }, { duration: 360, easing: "ease-in-out-cubic" }));
-        cy.animate(view, { duration: 360, easing: "ease-in-out-cubic" });
       }
       done();
     });
@@ -699,6 +768,7 @@
     const cyRef = useRef(null);
     const positions = useRef(new Map());
     const previousLayout = useRef(null);
+    const hasLaidOut = useRef(false);
     const handlers = useRef({});
     handlers.current = { onSelect, onToggle };
 
@@ -740,13 +810,27 @@
       const layoutChanged = previousLayout.current !== layoutMode;
       previousLayout.current = layoutMode;
       if (sameNodes) {
+        const shown = new Map(view.elements.filter((e) => e.group === "nodes").map((e) => [e.data.id, e.data]));
+        const resized = cy.nodes().toArray().some((n) =>
+          n.data("w") !== shown.get(n.id())?.w || n.data("h") !== shown.get(n.id())?.h);
+        const newEdges = view.elements.filter((e) => e.group === "edges");
+        const oldKeys = cy.edges().map((e) => e.id()).sort();
+        const newKeys = newEdges.map((e) => e.data.id).sort();
+        const edgesChanged = oldKeys.length !== newKeys.length || oldKeys.some((id, i) => id !== newKeys[i]);
         cy.batch(() => {
           cy.edges().remove();
-          cy.add(view.elements.filter((e) => e.group === "edges"));
-          const shown = new Map(view.elements.filter((e) => e.group === "nodes").map((e) => [e.data.id, e.data]));
-          cy.nodes().forEach((n) => n.data("muted", !!shown.get(n.id())?.muted));
+          cy.add(newEdges);
+          cy.nodes().forEach((n) => {
+            const changed = shown.get(n.id());
+            if (changed) n.data({
+              muted: !!changed.muted, cycle: !!changed.cycle,
+              w: changed.w, h: changed.h, connections: changed.connections,
+            });
+          });
         });
-        if (layoutMode !== "layers" && !layoutChanged) return;
+        // Recoloring cycles does not move nodes. Edge changes only relayout the
+        // top-down view; the free layout keeps manually adjusted positions.
+        if (!layoutChanged && !resized && (layoutMode !== "layers" || !edgesChanged)) return;
         onBusy(true);
         const timer = setTimeout(() => arrange(cy, false, () => onBusy(false), layoutMode), 30);
         return () => clearTimeout(timer);
@@ -770,7 +854,11 @@
       onBusy(true);
       // A timer, not requestAnimationFrame: it lets "Arranging…" paint first, and it
       // still runs when the report was opened in a background tab.
-      const timer = setTimeout(() => arrange(cy, placed === 0, () => onBusy(false), layoutMode), 30);
+      const timer = setTimeout(() => {
+        const autoFit = !hasLaidOut.current;
+        hasLaidOut.current = true;
+        arrange(cy, placed === 0, () => onBusy(false), layoutMode, autoFit);
+      }, 30);
       return () => clearTimeout(timer);
     }, [view, layoutMode]);
 
@@ -803,7 +891,7 @@
       const cy = cyRef.current;
       if (!cy || !centerTick || !focus) return;
       const node = cy.getElementById(focus);
-      if (node.nonempty()) cy.animate({ center: { eles: node }, zoom: Math.max(cy.zoom(), 0.9) }, { duration: 320 });
+      if (node.nonempty()) cy.animate({ center: { eles: node } }, { duration: 320 });
     }, [centerTick]);
 
     useEffect(() => {
@@ -1014,6 +1102,7 @@
     const uses = (out.imports.get(id) || []).filter((e) => kindOf(e.target) === "module");
     const usedBy = (inn.imports.get(id) || []).filter((e) => kindOf(e.source) === "module");
     const symbols = symbolKids(id);
+    const cycle = IMPORT_CYCLES.byModule.get(id) || [];
     const classes = symbols.filter((k) => kindOf(k) === "class").length;
     let functions = 0;
     for (const n2 of G.nodes) if (SYMBOL.has(n2.kind) && n2.kind !== "class" && moduleOf(n2.id) === id) functions += 1;
@@ -1038,6 +1127,11 @@
         <button class="btn" onClick=${onCenter}>Show on map</button>
         <${EdgeToggle} id=${id} mutedNodes=${mutedNodes} onToggleMuted=${onToggleMuted} />
       </div>
+      ${cycle.length > 0 && html`<${Block} title="Static import cycle" count=${cycle.length}>
+        <p class="hint">These modules are mutually reachable through imports (including type-only imports).</p>
+        <ul class="list">${cycle.filter((member) => member !== id).map((member) =>
+          html`<${Row} id=${member} name=${moduleLabel(member)} onSelect=${onSelect} />`)}</ul>
+      </${Block}>`}
       <${Block} title="Uses" count=${uses.length} dot="out" hint=${uses.length ? null : "Imports no other file in this project."}>
         <ul class="list">${uses.map((e) => html`<${Row} id=${e.target} name=${moduleLabel(e.target)} meta=${e.attrs && e.attrs.type_only ? "types only" : ""} onSelect=${onSelect} />`)}</ul>
       </${Block}>
@@ -1289,6 +1383,8 @@
       <ol>
         <li><b>Boxes are Python files.</b> Dashed boxes are folders: double-click one to open it.</li>
         <li><b>Arrows point to what a file imports.</b> Switch to “Calls” for call relationships. Calls start in a top-down layout; select “Top down” for Imports too.</li>
+        <li><b>Fit</b> reframes the entire graph; expanding or collapsing folders preserves the current camera.</li>
+        <li><b>Size by links</b> makes heavily connected nodes larger, and <b>Cycles</b> highlights static import cycles in red.</li>
         <li><b>Hide transitive</b> in Imports mode to remove redundant arrows (A → C when A → B → C). The original dependencies remain available in the details.</li>
         <li><b>Hide connections</b> in a file or folder’s details to remove its arrows without removing the node.</li>
         <li><b>Click a file</b> to see what it <span style="color:var(--accent-text)">uses</span> and what <span style="color:var(--usedby)">uses it</span>, and what is inside.</li>
@@ -1349,6 +1445,8 @@
     const layoutMode = layouts[mode];
     const [showExternal, setShowExternal] = useState(false);
     const [hideTransitive, setHideTransitive] = useState(true);
+    const [sizeByConnections, setSizeByConnections] = useState(false);
+    const [markCycles, setMarkCycles] = useState(true);
     const [mutedNodes, setMutedNodes] = useState(() => new Set());
     const [selected, setSelected] = useState(null);
     const [code, setCode] = useState(null);
@@ -1368,8 +1466,8 @@
     }, [theme]);
 
     const view = useMemo(
-      () => buildView(expanded, mode, showExternal, mutedNodes, hideTransitive),
-      [expanded, mode, showExternal, mutedNodes, hideTransitive]
+      () => buildView(expanded, mode, showExternal, mutedNodes, hideTransitive, sizeByConnections, markCycles),
+      [expanded, mode, showExternal, mutedNodes, hideTransitive, sizeByConnections, markCycles]
     );
 
     const focus = useMemo(() => {
@@ -1452,6 +1550,12 @@
             <input type="checkbox" checked=${hideTransitive} onChange=${(e) => setHideTransitive(e.target.checked)} />
             Hide transitive ${hideTransitive && view.omittedLinks > 0 ? `(${view.omittedLinks})` : ""}
           </label>`}
+          <label class="check" title="Enlarge boxes with more distinct direct incoming and outgoing connections, before transitive reduction.">
+            <input type="checkbox" checked=${sizeByConnections} onChange=${(e) => setSizeByConnections(e.target.checked)} /> Size by links
+          </label>
+          ${mode === "imports" && html`<label class="check" title="Highlight strongly connected modules, including TYPE_CHECKING imports. Collapsed folders are marked if they contain a cycle.">
+            <input type="checkbox" checked=${markCycles} onChange=${(e) => setMarkCycles(e.target.checked)} /> Cycles (${IMPORT_CYCLES.groups.length})
+          </label>`}
           <label class="check"><input type="checkbox" checked=${showExternal} onChange=${(e) => setShowExternal(e.target.checked)} /> Packages</label>
           <button class="btn icon" title=${"Theme: " + theme} aria-label=${"Theme: " + theme} onClick=${() => setTheme(THEMES[(THEMES.indexOf(theme) + 1) % THEMES.length])}>
             ${theme === "dark"
@@ -1497,6 +1601,7 @@
             <span><i class="sw folder"></i>Folder (double-click)</span>
             <span><i class="sw entry"></i>Entry point</span>
             <span><i class="sw error"></i>Not parsed</span>
+            ${mode === "imports" && markCycles && html`<span><i class="sw error"></i>Import cycle</span>`}
             <span><i class="ln"></i>Uses</span>
             <span><i class="ln in"></i>Used by</span>
           </div>
