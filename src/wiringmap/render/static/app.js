@@ -1304,6 +1304,75 @@
       orderSource: layerPositions.size ? "Import Linter layers" : "dependency topology" };
   }
 
+  // Every source module maps to exactly one currently visible row/column.
+  // Expanded package headings remain visible as navigation but contribute no
+  // counts themselves; descendant cells replace, rather than duplicate, totals.
+  function matrixVisible(matrix, expanded, filter = "") {
+    const tree = matrix.tree;
+    const query = filter.trim().toLowerCase();
+    const matches = new Map();
+    const selfMatch = (node) => !query ||
+      node.label.toLowerCase().includes(query) || node.path.toLowerCase().includes(query);
+    const hasMatch = (id) => {
+      if (matches.has(id)) return matches.get(id);
+      const node = tree.nodes.get(id);
+      const relevant = selfMatch(node) || node.children.some(hasMatch);
+      matches.set(id, relevant);
+      return relevant;
+    };
+    const entries = [], visible = new Map();
+    function visit(id, ancestorMatches = false) {
+      if (!ancestorMatches && !hasMatch(id)) return;
+      const node = tree.nodes.get(id);
+      const matchesHere = ancestorMatches || selfMatch(node);
+      // A search for a nested module automatically reveals its ancestors.
+      const open = node.kind === "package" &&
+        (expanded.has(id) || !!query && !matchesHere);
+      const entry = { ...node, expanded: open };
+      entries.push(entry);
+      visible.set(id, entry);
+      if (open)
+        for (const child of node.children) visit(child, matchesHere);
+    }
+    for (const id of matrix.packages) visit(id);
+
+    const representative = new Map();
+    for (const [moduleId, path] of tree.modulePaths) {
+      let chosen = null;
+      for (const id of path) {
+        const entry = visible.get(id);
+        if (!entry) { chosen = null; break; }
+        if (entry.kind === "module" || !entry.expanded) {
+          chosen = id;
+          break;
+        }
+      }
+      if (chosen !== null) representative.set(moduleId, chosen);
+    }
+
+    const cells = new Map(), rowTotals = new Map();
+    for (const edge of tree.imports) {
+      const from = representative.get(edge.source), to = representative.get(edge.target);
+      if (from === undefined || to === undefined) continue;
+      const key = from + "\n" + to;
+      if (!cells.has(key))
+        cells.set(key, { from, to, count: 0, typeOnly: 0, imports: [] });
+      const cell = cells.get(key);
+      cell.imports.push(edge);
+      cell.count++;
+      if (edge.attrs?.type_only) cell.typeOnly++;
+      rowTotals.set(from, (rowTotals.get(from) || 0) + 1);
+    }
+    for (const cell of cells.values())
+      cell.imports.sort((a, b) =>
+        a.source.localeCompare(b.source) || a.target.localeCompare(b.target));
+    return {
+      entries, cells, rowTotals,
+      maxCount: Math.max(1, ...[...cells.values()].map((cell) => cell.count)),
+      total: [...rowTotals.values()].reduce((sum, count) => sum + count, 0),
+    };
+  }
+
   const MATRIX = dependencyMatrix();
 
   function MatrixView({ matrix, selected, onCell }) {
