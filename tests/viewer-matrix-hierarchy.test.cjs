@@ -43,7 +43,7 @@ const window = {};
 const document = { getElementById: () => ({ textContent: JSON.stringify({ graph, architecture }) }) };
 const htmPreact = { html: () => null, render: () => null };
 vm.runInNewContext(source.replace(anchor,
-  '  window.matrixHierarchy = { MATRIX, matrixVisible };\\n' + anchor), {
+  '  window.matrixHierarchy = { MATRIX, matrixVisible };\n' + anchor), {
   window, document, htmPreact,
 });
 const { MATRIX, matrixVisible } = window.matrixHierarchy;
