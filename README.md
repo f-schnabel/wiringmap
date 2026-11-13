@@ -54,6 +54,18 @@ folder ignores itself, so it is never committed by accident.
   Switch between **Free** and **Top down** for either view. Cyclic dependencies
   share a layer since no ordering can make every edge in a cycle point down. Large projects start with folders closed (double-click to open one), and
   tests, docs and migrations stay closed so you see the application first.
+- **Stable camera.** Expanding folders and changing graph layouts, filters or node
+  sizes no longer automatically zooms out or pans. The first render fits once;
+  use **Fit** explicitly to reframe the whole graph. Navigating to a file
+  centers it without changing zoom.
+- **Size by links.** An optional logarithmic overlay emphasizes nodes with many
+  distinct direct incoming and outgoing connections. Sizes are capped and do not
+  change when transitive arrows are hidden.
+- **Static import cycles.** Highlight cyclic modules and cycle arrows in red,
+  including a collapsed folder if it contains cyclic modules. Details list the
+  other modules in the cycle. This uses static imports, including type-only
+  `TYPE_CHECKING` references, so it does not imply a runtime circular-import
+  failure.
 - **Hide transitive imports** (on by default) to simplify the map without deleting
   underlying dependency data: if A imports B and C, and B imports C, the direct
   A → C arrow is omitted. The filter works on the visible graph, including collapsed
@@ -73,6 +85,37 @@ folder ignores itself, so it is never committed by accident.
   next to the map.
 - **Big projects work too.** pandas (1,411 files) scans in under 8 seconds, and its
   report opens in under one.
+
+## Dependency matrix and Import Linter
+
+Switch from **Map** to **Matrix** in the report toolbar. Rows are importing packages;
+columns are imported packages. Cells show counts of **direct module imports**, including
+type-only imports; click any non-empty cell to see its exact importer and imported modules.
+Click a module in the inspector to return to the map focused on that file.
+
+Wiringmap automatically discovers Import Linter configuration from `setup.cfg`,
+`.importlinter`, or `pyproject.toml`. When available, its **root package** scopes
+the matrix and its **Layers** contract determines package ordering. The inspector
+shows the configured contracts, including protected interfaces, forbidden imports,
+and independence constraints. The matrix does **not** independently implement
+these contracts or claim that individual cells violate them; the heatmap indicates
+import counts only.
+
+To include an authoritative Import Linter check, run:
+
+```bash
+wiringmap build . --check-imports --open
+```
+
+This option runs `lint-imports` using the project environment and embeds its exit
+status and diagnostic output in the offline report. It is opt-in: ordinary
+`wiringmap build` does not run Import Linter or modify the project's environment.
+If `lint-imports` is not on the path, wiringmap tries
+`uv run --no-sync lint-imports`. Install Import Linter into the project's own
+environment before using this option.
+
+This is *architecture context plus actual checker output*, not a second implementation
+of Import Linter's rules. A stale report reflects the state when it was generated.
 
 ## See what your AI agent changed
 

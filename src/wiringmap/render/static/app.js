@@ -107,6 +107,54 @@
   }
   const dirsAbove = (id) => ancestorsOf(id).filter((a) => isDir(a) && a !== ROOT);
 
+  // Static import cycles include type-only references, which are not necessarily
+  // import-time circularities. Inspect original module edges, not folder aggregates.
+  function importCycles() {
+    const modules = G.nodes.filter((n) => n.kind === "module").map((n) => n.id);
+    const adjacent = new Map(modules.map((id) => [id, new Set()]));
+    for (const e of G.edges)
+      if (e.kind === "imports" && adjacent.has(e.source) && adjacent.has(e.target))
+        adjacent.get(e.source).add(e.target);
+
+    const indices = new Map(), low = new Map(), active = new Set(), stack = [], groups = [];
+    let index = 0;
+    function visit(id) {
+      indices.set(id, index);
+      low.set(id, index++);
+      active.add(id);
+      stack.push(id);
+      for (const to of adjacent.get(id)) {
+        if (!indices.has(to)) {
+          visit(to);
+          low.set(id, Math.min(low.get(id), low.get(to)));
+        } else if (active.has(to)) low.set(id, Math.min(low.get(id), indices.get(to)));
+      }
+      if (low.get(id) === indices.get(id)) {
+        const group = [];
+        let member;
+        do {
+          member = stack.pop();
+          active.delete(member);
+          group.push(member);
+        } while (member !== id);
+        if (group.length > 1 || adjacent.get(id).has(id)) groups.push(group.sort());
+      }
+    }
+    for (const id of modules) if (!indices.has(id)) visit(id);
+
+    const byModule = new Map(), folders = new Set(), edges = new Set();
+    for (const group of groups) for (const id of group) {
+      byModule.set(id, group);
+      for (const ancestor of ancestorsOf(id)) if (isDir(ancestor)) folders.add(ancestor);
+    }
+    for (const [from, targets] of adjacent)
+      for (const to of targets)
+        if (byModule.has(from) && byModule.get(from) === byModule.get(to))
+          edges.add(from + "\n" + to);
+    return { groups, byModule, folders, edges };
+  }
+  const IMPORT_CYCLES = importCycles();
+
   const labelWidth = (text) =>
     Math.max(56, Math.max(...String(text).split("\n").map((l) => l.length)) * 7.1 + 24);
 
@@ -216,7 +264,7 @@
     return links.filter((l) => kept.has(l));
   }
 
-  function buildView(expanded, mode, showExternal, mutedNodes, hideTransitive = false) {
+  function buildView(expanded, mode, showExternal, mutedNodes, hideTransitive = false, sizeByConnections = false, markCycles = true) {
     // Suppress individual module relationships *before* folding them into folder edges.
     // This preserves unrelated arrows when a folder contains both muted and active files.
     const mutedModules = new Set();
@@ -235,7 +283,7 @@
       rep.set(id, id);
       elements.push({
         group: "nodes",
-        data: { id, parent, label, kind: "module", entry, st, dim: !!DIFF && !st, muted: mutedModules.has(id), error: !!(n.attrs && n.attrs.parse_error), w: labelWidth(label) },
+        data: { id, parent, label, kind: "module", entry, st, dim: !!DIFF && !st, muted: mutedModules.has(id), cycle: markCycles && mode === "imports" && IMPORT_CYCLES.byModule.has(id), error: !!(n.attrs && n.attrs.parse_error), w: labelWidth(label) },
       });
     }
 
@@ -258,7 +306,7 @@
       const count = pyCount.get(id);
       const changes = changesUnder.get(id) || 0;
       const text = `${label}/\n${plural(count, "module")}${changes ? ` · ${changes} changed` : ""}`;
-      elements.push({ group: "nodes", data: { id, parent, label: text, kind: "folder", chg: changes > 0, dim: !!DIFF && !changes, muted, w: labelWidth(text) } });
+      elements.push({ group: "nodes", data: { id, parent, label: text, kind: "folder", chg: changes > 0, dim: !!DIFF && !changes, muted, cycle: markCycles && mode === "imports" && IMPORT_CYCLES.folders.has(id), w: labelWidth(text) } });
       forEachModule(id, (m) => rep.set(m, id));
     }
 
@@ -266,20 +314,22 @@
     addGhosts(ROOT, undefined);
 
     const links = new Map();
-    const link = (s, t, typeOnly) => {
+    const link = (s, t, typeOnly, cycle = false) => {
       if (!s || !t || s === t) return;
       const key = s + "\n" + t;
       let l = links.get(key);
-      if (!l) links.set(key, (l = { s, t, n: 0, typeOnly: true }));
+      if (!l) links.set(key, (l = { s, t, n: 0, typeOnly: true, cycle: false }));
       l.n += 1;
       l.typeOnly = l.typeOnly && typeOnly;
+      l.cycle = l.cycle || cycle;
     };
 
     if (mode === "imports") {
       for (const [src, list] of out.imports)
         for (const e of list)
           if (kindOf(e.target) === "module" && !mutedModules.has(src) && !mutedModules.has(e.target))
-            link(rep.get(src), rep.get(e.target), !!(e.attrs && e.attrs.type_only));
+            link(rep.get(src), rep.get(e.target), !!(e.attrs && e.attrs.type_only),
+              markCycles && IMPORT_CYCLES.edges.has(src + "\n" + e.target));
     } else {
       for (const [src, list] of out.calls)
         for (const e of list) {
@@ -306,12 +356,31 @@
     }
 
     const visibleLinks = [...links.values()];
+    // Importance is based on distinct direct neighbors, before transitive
+    // reduction, so changing that visibility filter does not resize nodes.
+    const neighbors = new Map();
+    for (const l of visibleLinks) {
+      if (!neighbors.has(l.s)) neighbors.set(l.s, new Set());
+      if (!neighbors.has(l.t)) neighbors.set(l.t, new Set());
+      neighbors.get(l.s).add(l.t);
+      neighbors.get(l.t).add(l.s);
+    }
+    for (const item of elements) {
+      if (item.group !== "nodes" || item.data.kind === "group" || item.data.id.startsWith("ghost:")) continue;
+      const count = neighbors.get(item.data.id)?.size || 0;
+      item.data.connections = count;
+      if (sizeByConnections) {
+        const growth = Math.min(40, Math.round(Math.log2(1 + count) * 7));
+        item.data.w += growth;
+        item.data.h = (item.data.kind === "folder" ? 44 : 28) + Math.min(24, Math.round(growth * 0.55));
+      }
+    }
     const renderedLinks = mode === "imports" && hideTransitive
       ? reduceTransitiveLinks(visibleLinks) : visibleLinks;
     for (const l of renderedLinks)
       elements.push({
         group: "edges",
-        data: { id: `e:${l.s}->${l.t}`, source: l.s, target: l.t, n: l.n, typeOnly: l.typeOnly, w: Math.min(1 + Math.log2(l.n), 5) },
+        data: { id: `e:${l.s}->${l.t}`, source: l.s, target: l.t, n: l.n, typeOnly: l.typeOnly, cycle: l.cycle, w: Math.min(1 + Math.log2(l.n), 5) },
       });
 
     return {
@@ -406,6 +475,7 @@
         },
       },
       { selector: "node[kind = 'external']", style: { "background-opacity": 0, "border-style": "dotted", color: c("--muted") } },
+      { selector: "node[h]", style: { height: "data(h)" } },
       { selector: "node[?entry]", style: { "border-color": c("--ok"), "border-width": 2 } },
       { selector: "node[?error]", style: { "border-color": c("--danger"), "border-style": "dashed", "border-width": 2 } },
       { selector: "node[st = 'added']", style: { "background-color": c("--add-bg"), "border-color": c("--add"), "border-width": 1.5 } },
@@ -416,6 +486,7 @@
       { selector: "node[?chg]", style: { "border-color": c("--chg"), "border-width": 1.5 } },
       { selector: "node[?dim]", style: { opacity: 0.4 } },
       { selector: "node[?muted]", style: { "border-style": "dotted", "border-width": 2, "border-color": c("--faint") } },
+      { selector: "node[?cycle]", style: { "border-color": c("--danger"), "border-width": 2.5 } },
       {
         selector: "edge",
         style: {
@@ -429,6 +500,7 @@
         },
       },
       { selector: "edge[?typeOnly]", style: { "line-style": "dashed" } },
+      { selector: "edge[?cycle]", style: { "line-color": c("--danger"), "target-arrow-color": c("--danger"), opacity: 0.95 } },
       { selector: ".faded", style: { opacity: 0.13 } },
       { selector: "edge.faded", style: { opacity: 0.06 } },
       { selector: "node.nb-out", style: { "border-color": c("--accent"), "border-width": 2 } },
@@ -530,7 +602,7 @@
       const items = children.map((n) => {
         if (n.isParent()) return { id: n.id(), ...place(n) };
         const width = Math.max(70, Number(n.data("w")) || 110);
-        const height = n.data("kind") === "folder" ? 44 : 32;
+        const height = Number(n.data("h")) || (n.data("kind") === "folder" ? 44 : 32);
         return { id: n.id(), width, height, positions: [{ id: n.id(), x: width / 2, y: height / 2 }] };
       });
       const owner = new Map();
@@ -577,18 +649,18 @@
   }
 
   // Lay out the map and glide to new positions.
-  function arrange(cy, randomize, done, layoutMode) {
+  function arrange(cy, randomize, done, layoutMode, autoFit = false) {
     const leaves = cy.nodes().filter((n) => !n.isParent());
     const start = new Map(leaves.map((n) => [n.id(), { ...n.position() }]));
     if (layoutMode === "layers") {
       const targets = layeredPositions(cy);
       leaves.forEach((n) => n.position(targets.get(n.id())));
-      const viewport = fittedViewport(cy);
-      if (randomize || leaves.length > 350) cy.viewport(viewport);
-      else {
+      // Fitting is deliberately only automatic on the first render.
+      // Expanding a folder or changing filters must not change zoom or pan.
+      if (autoFit) cy.viewport(fittedViewport(cy));
+      else if (!randomize && leaves.length <= 350) {
         leaves.forEach((n) => n.position(start.get(n.id())));
         leaves.forEach((n) => n.animate({ position: targets.get(n.id()) }, { duration: 360, easing: "ease-in-out-cubic" }));
-        cy.animate(viewport, { duration: 360, easing: "ease-in-out-cubic" });
       }
       done();
       return;
@@ -597,14 +669,11 @@
     layout.one("layoutstop", () => {
       separate(cy);
       packComponents(cy);
-      const view = fittedViewport(cy);
-      if (randomize || leaves.length > 350) {
-        cy.viewport(view);
-      } else {
+      if (autoFit) cy.viewport(fittedViewport(cy));
+      else if (!randomize && leaves.length <= 350) {
         const end = new Map(leaves.map((n) => [n.id(), { ...n.position() }]));
         leaves.forEach((n) => n.position(start.get(n.id())));
         leaves.forEach((n) => n.animate({ position: end.get(n.id()) }, { duration: 360, easing: "ease-in-out-cubic" }));
-        cy.animate(view, { duration: 360, easing: "ease-in-out-cubic" });
       }
       done();
     });
@@ -694,9 +763,7 @@
     };
   }
 
-  // In Pan mode, dragging either a node or an edge moves the viewport.
-  // In Move nodes mode, only nodes move; the background and edges still pan.
-  // This is reapplied after every view rebuild because Cytoscape recreates edges.
+  // Dragging arrows always pans; nodes pan by default and can be moved on demand.
   function configureInteraction(cy, interactionMode) {
     cy.edges().unselectify().panify();
     if (interactionMode === "pan") cy.nodes().panify();
@@ -708,6 +775,7 @@
     const cyRef = useRef(null);
     const positions = useRef(new Map());
     const previousLayout = useRef(null);
+    const hasLaidOut = useRef(false);
     const handlers = useRef({});
     handlers.current = { onSelect, onToggle };
 
@@ -749,13 +817,27 @@
       const layoutChanged = previousLayout.current !== layoutMode;
       previousLayout.current = layoutMode;
       if (sameNodes) {
+        const shown = new Map(view.elements.filter((e) => e.group === "nodes").map((e) => [e.data.id, e.data]));
+        const resized = cy.nodes().toArray().some((n) =>
+          n.data("w") !== shown.get(n.id())?.w || n.data("h") !== shown.get(n.id())?.h);
+        const newEdges = view.elements.filter((e) => e.group === "edges");
+        const oldKeys = cy.edges().map((e) => e.id()).sort();
+        const newKeys = newEdges.map((e) => e.data.id).sort();
+        const edgesChanged = oldKeys.length !== newKeys.length || oldKeys.some((id, i) => id !== newKeys[i]);
         cy.batch(() => {
           cy.edges().remove();
-          cy.add(view.elements.filter((e) => e.group === "edges"));
-          const shown = new Map(view.elements.filter((e) => e.group === "nodes").map((e) => [e.data.id, e.data]));
-          cy.nodes().forEach((n) => n.data("muted", !!shown.get(n.id())?.muted));
+          cy.add(newEdges);
+          cy.nodes().forEach((n) => {
+            const changed = shown.get(n.id());
+            if (changed) n.data({
+              muted: !!changed.muted, cycle: !!changed.cycle,
+              w: changed.w, h: changed.h, connections: changed.connections,
+            });
+          });
         });
-        if (layoutMode !== "layers" && !layoutChanged) return;
+        // Recoloring cycles does not move nodes. Edge changes only relayout the
+        // top-down view; the free layout keeps manually adjusted positions.
+        if (!layoutChanged && !resized && (layoutMode !== "layers" || !edgesChanged)) return;
         onBusy(true);
         const timer = setTimeout(() => arrange(cy, false, () => onBusy(false), layoutMode), 30);
         return () => clearTimeout(timer);
@@ -779,7 +861,11 @@
       onBusy(true);
       // A timer, not requestAnimationFrame: it lets "Arranging…" paint first, and it
       // still runs when the report was opened in a background tab.
-      const timer = setTimeout(() => arrange(cy, placed === 0, () => onBusy(false), layoutMode), 30);
+      const timer = setTimeout(() => {
+        const autoFit = !hasLaidOut.current;
+        hasLaidOut.current = true;
+        arrange(cy, placed === 0, () => onBusy(false), layoutMode, autoFit);
+      }, 30);
       return () => clearTimeout(timer);
     }, [view, layoutMode]);
 
@@ -817,7 +903,7 @@
       const cy = cyRef.current;
       if (!cy || !centerTick || !focus) return;
       const node = cy.getElementById(focus);
-      if (node.nonempty()) cy.animate({ center: { eles: node }, zoom: Math.max(cy.zoom(), 0.9) }, { duration: 320 });
+      if (node.nonempty()) cy.animate({ center: { eles: node } }, { duration: 320 });
     }, [centerTick]);
 
     useEffect(() => {
@@ -949,6 +1035,178 @@
     </div>`;
   }
 
+
+  // Dependency matrix: group modules by direct child of the configured root.
+  // We preserve concrete module import edges for cell drill-down; the matrix
+  // never uses the display-only transitive-reduced graph.
+  const ARCH = DATA.architecture || null;
+
+  function dependencyMatrix() {
+    const modules = G.nodes.filter((n) => n.kind === "module").map((n) => n.id);
+    const candidates = (ARCH && ARCH.root_packages) || [];
+    const counts = new Map();
+    for (const id of modules) {
+      const top = id.split(".")[0];
+      counts.set(top, (counts.get(top) || 0) + 1);
+    }
+    const fallback = [...counts].sort((a, b) => b[1] - a[1])[0]?.[0] || "";
+    const root = candidates.find((name) => modules.some((id) => id === name || id.startsWith(name + "."))) || fallback;
+
+    const ofModule = (id) => {
+      if (id === root) return "(root)";
+      if (!id.startsWith(root + ".")) return null;
+      return id.slice(root.length + 1).split(".")[0];
+    };
+    const groups = new Set();
+    const owners = new Map();
+    for (const id of modules) {
+      const group = ofModule(id);
+      if (group !== null) {
+        owners.set(id, group);
+        groups.add(group);
+      }
+    }
+    const layerPositions = new Map();
+    for (const contract of (ARCH && ARCH.contracts) || []) {
+      if (contract.type !== "layers") continue;
+      const containers = contract.containers || [];
+      if (containers.length && !containers.includes(root)) continue;
+      const layers = contract.layers || [];
+      if (!Array.isArray(layers)) continue;
+      for (const [level, expression] of layers.entries()) {
+        // "|" and ":" both mean that these names occupy one declared layer.
+        for (const name of String(expression).replace(/[()]/g, "").split(/[|:]/).map((n) => n.trim())) {
+          if (name && !layerPositions.has(name)) layerPositions.set(name, level);
+        }
+      }
+      break;
+    }
+    const packages = [...groups].sort((a, b) => {
+      const x = layerPositions.get(a) ?? Infinity, y = layerPositions.get(b) ?? Infinity;
+      return x - y || a.localeCompare(b);
+    });
+    const cells = new Map();
+    let total = 0;
+    for (const e of G.edges) {
+      if (e.kind !== "imports") continue;
+      const from = owners.get(e.source), to = owners.get(e.target);
+      if (from === undefined || to === undefined) continue;
+      const key = from + "\n" + to;
+      if (!cells.has(key)) cells.set(key, { from, to, imports: [], count: 0, typeOnly: 0 });
+      const cell = cells.get(key);
+      cell.imports.push(e);
+      cell.count++;
+      if (e.attrs && e.attrs.type_only) cell.typeOnly++;
+      total++;
+    }
+    for (const cell of cells.values()) cell.imports.sort((a, b) =>
+      a.source.localeCompare(b.source) || a.target.localeCompare(b.target));
+    const maxCount = Math.max(1, ...[...cells.values()].map((v) => v.count));
+    return { root, packages, cells, total, maxCount, layerPositions };
+  }
+
+  const MATRIX = dependencyMatrix();
+
+  function MatrixView({ matrix, selected, onCell }) {
+    const [filter, setFilter] = useState("");
+    const query = filter.trim().toLowerCase();
+    const packages = matrix.packages.filter((name) => !query || name.toLowerCase().includes(query));
+    return html`<div class="matrix-view">
+      <div class="matrix-head">
+        <div>
+          <h2>Dependency matrix</h2>
+          <p>Rows import columns · direct module imports, including type-only imports.</p>
+        </div>
+        <input class="matrix-filter" type="search" aria-label="Filter packages"
+          placeholder="Filter packages…" value=${filter} onInput=${(e) => setFilter(e.target.value)} />
+      </div>
+      ${packages.length
+        ? html`<div class="matrix-scroll"><table class="matrix-table" aria-label="Module import dependencies by package">
+            <thead><tr><th class="matrix-corner" scope="col">Imports ↓ / →</th>
+              ${packages.map((name) => html`<th scope="col" title=${matrix.root + "." + name}>${name}</th>`)}
+              <th scope="col">Total</th>
+            </tr></thead>
+            <tbody>${packages.map((from) => {
+              const rowTotal = matrix.packages.reduce((sum, to) =>
+                sum + (matrix.cells.get(from + "\n" + to)?.count || 0), 0);
+              return html`<tr>
+                <th scope="row" title=${matrix.root + "." + from}>${from}</th>
+                ${packages.map((to) => {
+                  const cell = matrix.cells.get(from + "\n" + to);
+                  const count = cell?.count || 0;
+                  const level = count ? Math.min(5, Math.max(1, Math.ceil(Math.log1p(count) / Math.log1p(matrix.maxCount) * 5))) : 0;
+                  const chosen = selected && selected.from === from && selected.to === to;
+                  return html`<td>
+                    ${count
+                      ? html`<button class=${"matrix-value heat-" + level + (chosen ? " active" : "")}
+                          aria-pressed=${!!chosen}
+                          title=${from + " imports " + to + ": " + count + " module imports" + (cell.typeOnly ? " (" + cell.typeOnly + " type-only)" : "")}
+                          aria-label=${from + " imports " + to + ": " + count + " module imports"}
+                          onClick=${() => onCell({ from, to })}>${count}</button>`
+                      : html`<span class="matrix-empty" aria-label="No imports">·</span>`}
+                  </td>`;
+                })}
+                <td class="matrix-total">${rowTotal}</td>
+              </tr>`;
+            })}</tbody>
+          </table></div>`
+        : html`<p class="hint">No packages match this filter.</p>`}
+      <div class="matrix-foot">Color intensity represents the number of direct module imports, not contract violations.
+        ${matrix.packages.length} package groups · ${plural(matrix.total, "import")}.</div>
+    </div>`;
+  }
+
+  function MatrixInspector({ matrix, selected, onModule }) {
+    const [showAll, setShowAll] = useState(false);
+    useEffect(() => setShowAll(false), [selected?.from, selected?.to]);
+    if (!selected) {
+      const check = ARCH?.check;
+      return html`<div class="pad">
+        <h2>Architecture</h2>
+        <p class="hint">Select a matrix cell to inspect the direct module imports.</p>
+        <div class="facts">
+          <div class="fact"><b>${matrix.packages.length}</b><span>packages</span></div>
+          <div class="fact"><b>${matrix.total}</b><span>direct imports</span></div>
+        </div>
+        ${ARCH
+          ? html`<${Block} title="Import Linter contracts" count=${(ARCH.contracts || []).length}>
+              ${ARCH.error && html`<p class="alert">${ARCH.error}</p>`}
+              <p class="hint">Loaded from ${ARCH.source || "the project"}. Contract definitions are displayed, not reimplemented.</p>
+              <ul class="list">${(ARCH.contracts || []).map((contract) =>
+                html`<li class="matrix-contract"><b>${contract.name || "Unnamed contract"}</b>
+                  <span class="meta">${contract.type || "custom"}</span>
+                  ${contract.type === "layers" && html`<div class="matrix-layers">${(contract.layers || []).map((layer) => html`<div>${layer}</div>`)}</div>`}
+                </li>`)}</ul>
+              <p class="hint">Use <code>lint-imports</code> for authoritative contract results. This matrix does not independently flag violations.</p>
+            </${Block}>`
+          : html`<p class="hint">No Import Linter configuration found. Package ordering is alphabetical.</p>`}
+        ${check && html`<${Block} title="Import Linter check">
+          <p><b>${check.status}</b> ${check.command || ""}</p>
+          <pre class="matrix-output">${check.output || ""}</pre>
+        </${Block}>`}
+      </div>`;
+    }
+    const cell = matrix.cells.get(selected.from + "\n" + selected.to);
+    if (!cell) return null;
+    const imports = showAll ? cell.imports : cell.imports.slice(0, 100);
+    return html`<div class="pad">
+      <h2>${selected.from} → ${selected.to}</h2>
+      <p class="hint">${plural(cell.count, "direct module import")}; ${cell.typeOnly} type-only.</p>
+      <button class="btn" onClick=${() => onModule(cell.imports[0].source)}>Show on map</button>
+      <${Block} title="Module relationships" count=${cell.count}>
+        <ul class="list">${imports.map((e) => html`<li class="matrix-import-row">
+          <button class="matrix-module" title="View importer on map" onClick=${() => onModule(e.source)}>${e.source}</button>
+          <span>→</span>
+          <button class="matrix-module" title="View imported module on map" onClick=${() => onModule(e.target)}>${e.target}</button>
+          ${e.attrs?.type_only && html`<span class="meta">types only</span>`}
+        </li>`)}</ul>
+        ${cell.imports.length > 100 && html`<button class="btn" onClick=${() => setShowAll(!showAll)}>
+          ${showAll ? "Show fewer" : "Show all " + cell.imports.length}
+        </button>`}
+      </${Block}>
+    </div>`;
+  }
+
   // Inspector ------------------------------------------------------------------------
 
   function Row({ id, name, meta, kind, onSelect, badge }) {
@@ -1028,6 +1286,7 @@
     const uses = (out.imports.get(id) || []).filter((e) => kindOf(e.target) === "module");
     const usedBy = (inn.imports.get(id) || []).filter((e) => kindOf(e.source) === "module");
     const symbols = symbolKids(id);
+    const cycle = IMPORT_CYCLES.byModule.get(id) || [];
     const classes = symbols.filter((k) => kindOf(k) === "class").length;
     let functions = 0;
     for (const n2 of G.nodes) if (SYMBOL.has(n2.kind) && n2.kind !== "class" && moduleOf(n2.id) === id) functions += 1;
@@ -1052,6 +1311,11 @@
         <button class="btn" onClick=${onCenter}>Show on map</button>
         <${EdgeToggle} id=${id} mutedNodes=${mutedNodes} onToggleMuted=${onToggleMuted} />
       </div>
+      ${cycle.length > 0 && html`<${Block} title="Static import cycle" count=${cycle.length}>
+        <p class="hint">These modules are mutually reachable through imports (including type-only imports).</p>
+        <ul class="list">${cycle.filter((member) => member !== id).map((member) =>
+          html`<${Row} id=${member} name=${moduleLabel(member)} onSelect=${onSelect} />`)}</ul>
+      </${Block}>`}
       <${Block} title="Uses" count=${uses.length} dot="out" hint=${uses.length ? null : "Imports no other file in this project."}>
         <ul class="list">${uses.map((e) => html`<${Row} id=${e.target} name=${moduleLabel(e.target)} meta=${e.attrs && e.attrs.type_only ? "types only" : ""} onSelect=${onSelect} />`)}</ul>
       </${Block}>
@@ -1304,6 +1568,8 @@
         <li><b>Pan</b> is the default: drag anywhere (including a node or an arrow) to pan. Switch to <b>Move nodes</b> to rearrange boxes. Arrows are never selectable.</li>
         <li><b>Boxes are Python files.</b> Dashed boxes are folders: double-click one to open it.</li>
         <li><b>Arrows point to what a file imports.</b> Switch to “Calls” for call relationships. Calls start in a top-down layout; select “Top down” for Imports too.</li>
+        <li><b>Fit</b> reframes the entire graph; expanding or collapsing folders preserves the current camera.</li>
+        <li><b>Size by links</b> makes heavily connected nodes larger, and <b>Cycles</b> highlights static import cycles in red.</li>
         <li><b>Hide transitive</b> in Imports mode to remove redundant arrows (A → C when A → B → C). The original dependencies remain available in the details.</li>
         <li><b>Hide connections</b> in a file or folder’s details to remove its arrows without removing the node.</li>
         <li><b>Click a file</b> to see what it <span style="color:var(--accent-text)">uses</span> and what <span style="color:var(--usedby)">uses it</span>, and what is inside.</li>
@@ -1359,12 +1625,16 @@
 
   function App() {
     const [expanded, setExpanded] = useState(initialExpanded);
+    const [presentation, setPresentation] = useState("map");
+    const [matrixCell, setMatrixCell] = useState(null);
     const [mode, setMode] = useState("imports");
     const [layouts, setLayouts] = useState({ imports: "free", calls: "layers" });
     const layoutMode = layouts[mode];
     const [interactionMode, setInteractionMode] = useState("pan");
     const [showExternal, setShowExternal] = useState(false);
     const [hideTransitive, setHideTransitive] = useState(true);
+    const [sizeByConnections, setSizeByConnections] = useState(false);
+    const [markCycles, setMarkCycles] = useState(true);
     const [mutedNodes, setMutedNodes] = useState(() => new Set());
     const [selected, setSelected] = useState(null);
     const [code, setCode] = useState(null);
@@ -1384,8 +1654,8 @@
     }, [theme]);
 
     const view = useMemo(
-      () => buildView(expanded, mode, showExternal, mutedNodes, hideTransitive),
-      [expanded, mode, showExternal, mutedNodes, hideTransitive]
+      () => buildView(expanded, mode, showExternal, mutedNodes, hideTransitive, sizeByConnections, markCycles),
+      [expanded, mode, showExternal, mutedNodes, hideTransitive, sizeByConnections, markCycles]
     );
 
     const focus = useMemo(() => {
@@ -1415,7 +1685,15 @@
     }, []);
 
     const onMapSelect = useCallback((id) => select(id, false), [select]);
-    const onListSelect = useCallback((id) => select(id, true), [select]);
+    const onListSelect = useCallback((id) => {
+      setPresentation("map");
+      select(id, true);
+    }, [select]);
+    const onMatrixModule = useCallback((id) => {
+      setPresentation("map");
+      setMode("imports");
+      select(id, true);
+    }, [select]);
 
     const toggle = useCallback((id) => {
       setExpanded((prev) => {
@@ -1454,6 +1732,10 @@
         <div class="spacer"></div>
         <${SearchBox} onPick=${onListSelect} />
         <div class="controls">
+          <div class="seg" role="group" aria-label="Visualization">
+            <button aria-pressed=${presentation === "map"} onClick=${() => setPresentation("map")}>Map</button>
+            <button aria-pressed=${presentation === "matrix"} onClick=${() => setPresentation("matrix")}>Matrix</button>
+          </div>
           <div class="seg" role="group" aria-label="Arrows show">
             <button aria-pressed=${mode === "imports"} onClick=${() => setMode("imports")}>Imports</button>
             <button aria-pressed=${mode === "calls"} onClick=${() => setMode("calls")}>Calls</button>
@@ -1468,6 +1750,12 @@
             <input type="checkbox" checked=${hideTransitive} onChange=${(e) => setHideTransitive(e.target.checked)} />
             Hide transitive ${hideTransitive && view.omittedLinks > 0 ? `(${view.omittedLinks})` : ""}
           </label>`}
+          <label class="check" title="Enlarge boxes with more distinct direct incoming and outgoing connections, before transitive reduction.">
+            <input type="checkbox" checked=${sizeByConnections} onChange=${(e) => setSizeByConnections(e.target.checked)} /> Size by links
+          </label>
+          ${mode === "imports" && html`<label class="check" title="Highlight strongly connected modules, including TYPE_CHECKING imports. Collapsed folders are marked if they contain a cycle.">
+            <input type="checkbox" checked=${markCycles} onChange=${(e) => setMarkCycles(e.target.checked)} /> Cycles (${IMPORT_CYCLES.groups.length})
+          </label>`}
           <label class="check"><input type="checkbox" checked=${showExternal} onChange=${(e) => setShowExternal(e.target.checked)} /> Packages</label>
           <button class="btn icon" title=${"Theme: " + theme} aria-label=${"Theme: " + theme} onClick=${() => setTheme(THEMES[(THEMES.indexOf(theme) + 1) % THEMES.length])}>
             ${theme === "dark"
@@ -1480,6 +1768,7 @@
       </header>
       <div class="main">
         <div class="canvas-wrap">
+          <div class="graph-layer" style=${presentation === "matrix" ? "visibility:hidden;pointer-events:none" : ""}>
           ${totalModules === 0
             ? html`<div class="empty-map">No Python files were found in this repository.</div>`
             : html`<${GraphView}
@@ -1494,7 +1783,9 @@
                 onToggle=${toggle}
                 onBusy=${setBusy}
               />`}
-          <div class="overlay tools">
+          </div>
+          ${presentation === "matrix" && html`<${MatrixView} matrix=${MATRIX} selected=${matrixCell} onCell=${setMatrixCell} />`}
+          <div class="overlay tools" hidden=${presentation === "matrix"}>
             <div class="seg" role="group" aria-label="Map interaction mode">
               <button aria-pressed=${interactionMode === "pan"}
                 title="Drag anywhere, including nodes and lines, to pan. Click nodes for details."
@@ -1507,8 +1798,8 @@
             <button class="btn" disabled=${totalModules > MAX_EXPAND_ALL} title=${totalModules > MAX_EXPAND_ALL ? "Too many files to show at once; open folders one by one" : "Open every folder"} onClick=${() => setExpanded(allFolders())}>Expand all</button>
             <button class="btn" onClick=${() => setExpanded(new Set())}>Collapse all</button>
           </div>
-          ${busy && html`<div class="busy">Arranging…</div>`}
-          ${DIFF
+          ${presentation === "map" && busy && html`<div class="busy">Arranging…</div>`}
+          ${presentation === "map" && DIFF
             ? html`<div class="legend" aria-label="Legend">
                 <span><i class="sw st-added"></i>+ Added</span>
                 <span><i class="sw st-changed"></i>~ Changed</span>
@@ -1517,23 +1808,25 @@
                 <span><i class="sw" style="opacity:.4"></i>Unchanged</span>
               </div>`
             : null}
-          <div class="legend" aria-label="Legend" hidden=${!!DIFF}>
+          <div class="legend" aria-label="Legend" hidden=${presentation !== "map" || !!DIFF}>
             <span><i class="sw"></i>Python file</span>
             <span><i class="sw folder"></i>Folder (double-click)</span>
             <span><i class="sw entry"></i>Entry point</span>
             <span><i class="sw error"></i>Not parsed</span>
+            ${mode === "imports" && markCycles && html`<span><i class="sw error"></i>Import cycle</span>`}
             <span><i class="ln"></i>Uses</span>
             <span><i class="ln in"></i>Used by</span>
           </div>
         </div>
         <aside class="inspector" ref=${inspector} aria-label="Details">
-          ${!selected && (DIFF ? html`<${ChangesPanel} onSelect=${onListSelect} />` : html`<${Welcome} onSelect=${onListSelect} />`)}
-          ${selected && selected.startsWith("ghost:") && html`<${GhostCard} id=${selected} onSelect=${onListSelect} />`}
-          ${kind === "module" && html`<${ModuleCard} id=${selected} onSelect=${onListSelect} onCode=${(p, l, e) => setCode({ path: p, line: l, end: e })} onCenter=${center} mutedNodes=${mutedNodes} onToggleMuted=${toggleMuted} />`}
-          ${SYMBOL.has(kind) && html`<${SymbolCard} id=${selected} onSelect=${onListSelect} onCode=${(p, l, e) => setCode({ path: p, line: l, end: e })} onCenter=${center} />`}
-          ${kind === "directory" && html`<${FolderCard} id=${selected} expanded=${expanded} onSelect=${onListSelect} onToggle=${toggle} onCenter=${center} mutedNodes=${mutedNodes} onToggleMuted=${toggleMuted} />`}
-          ${kind === "external" && html`<${ExternalCard} id=${selected} onSelect=${onListSelect} mutedNodes=${mutedNodes} onToggleMuted=${toggleMuted} />`}
-          ${code && html`<${CodePanel} ...${code} onClose=${() => setCode(null)} />`}
+          ${presentation === "matrix" && html`<${MatrixInspector} matrix=${MATRIX} selected=${matrixCell} onModule=${onMatrixModule} />`}
+          ${presentation === "map" && !selected && (DIFF ? html`<${ChangesPanel} onSelect=${onListSelect} />` : html`<${Welcome} onSelect=${onListSelect} />`)}
+          ${presentation === "map" && selected && selected.startsWith("ghost:") && html`<${GhostCard} id=${selected} onSelect=${onListSelect} />`}
+          ${presentation === "map" && kind === "module" && html`<${ModuleCard} id=${selected} onSelect=${onListSelect} onCode=${(p, l, e) => setCode({ path: p, line: l, end: e })} onCenter=${center} mutedNodes=${mutedNodes} onToggleMuted=${toggleMuted} />`}
+          ${presentation === "map" && SYMBOL.has(kind) && html`<${SymbolCard} id=${selected} onSelect=${onListSelect} onCode=${(p, l, e) => setCode({ path: p, line: l, end: e })} onCenter=${center} />`}
+          ${presentation === "map" && kind === "directory" && html`<${FolderCard} id=${selected} expanded=${expanded} onSelect=${onListSelect} onToggle=${toggle} onCenter=${center} mutedNodes=${mutedNodes} onToggleMuted=${toggleMuted} />`}
+          ${presentation === "map" && kind === "external" && html`<${ExternalCard} id=${selected} onSelect=${onListSelect} mutedNodes=${mutedNodes} onToggleMuted=${toggleMuted} />`}
+          ${presentation === "map" && code && html`<${CodePanel} ...${code} onClose=${() => setCode(null)} />`}
         </aside>
       </div>
     </div>`;
