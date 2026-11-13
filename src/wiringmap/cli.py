@@ -18,6 +18,7 @@ from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn
 from rich.table import Table
 
 from wiringmap import __version__, gitsnap
+from wiringmap.architecture import check_importlinter, read_importlinter
 from wiringmap.builder import build_graph
 from wiringmap.diff import diff_graphs
 from wiringmap.diff_report import to_markdown
@@ -129,6 +130,10 @@ def build(
         bool, typer.Option("--open", help="Open the report in your browser when done.")
     ] = False,
     quiet: Annotated[bool, typer.Option("--quiet", "-q", help="Only print errors.")] = False,
+    check_imports: Annotated[
+        bool,
+        typer.Option("--check-imports", help="Run the project's Import Linter and embed its result."),
+    ] = False,
 ) -> None:
     """Build an interactive map of a repository as one offline HTML file."""
     graph, elapsed = _scan(path, exclude, quiet)
@@ -147,7 +152,15 @@ def build(
         target = out_dir / "report.html"
     else:
         target = output
-    _write(target, render_report(graph, sources), quiet)
+    architecture = read_importlinter(path)
+    if check_imports:
+        if architecture is None:
+            architecture = {"source": "", "root_packages": [], "contracts": [],
+                            "check": {"status": "unavailable",
+                                      "output": "No Import Linter configuration found."}}
+        else:
+            architecture["check"] = check_importlinter(path, architecture)
+    _write(target, render_report(graph, sources, architecture=architecture), quiet)
     if not quiet:
         _print_summary(graph, elapsed)
     if open_report:
@@ -222,6 +235,7 @@ def diff(
     )
     result = diff_graphs(before, after, gitsnap.describe(base, base_commit), head_label)
     markdown = to_markdown(result, after)
+    architecture = read_importlinter(path) if want_html else None
 
     if as_json:
         typer.echo(json.dumps(result.to_dict(), indent=2))
@@ -237,12 +251,12 @@ def diff(
         elif suffix == ".md":
             _write(output, markdown, quiet=True)
         else:
-            _write(output, render_report(after, sources, diff=result), quiet=True)
+            _write(output, render_report(after, sources, diff=result, architecture=architecture), quiet=True)
     if open_report:
         target = output if output is not None and output.suffix.lower() == ".html" else None
         if target is None:
             target = _output_dir(path) / "diff.html"
-            _write(target, render_report(after, sources, diff=result), quiet=True)
+            _write(target, render_report(after, sources, diff=result, architecture=architecture), quiet=True)
         webbrowser.open(target.resolve().as_uri())
 
 
