@@ -1266,6 +1266,8 @@
       node.kind = "module";
       node.moduleId = child.moduleId;
       node.path = child.path;
+      // Keep top-level package names short; nested leaves show real filenames.
+      if (node.parent) node.label = child.label;
       node.children = [];
       treeNodes.delete(child.id);
     }
