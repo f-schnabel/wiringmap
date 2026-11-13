@@ -67,8 +67,11 @@ def test_missing_and_invalid_configuration_do_not_break_reports(tmp_path):
 def test_linter_is_only_run_on_explicit_request(tmp_path, monkeypatch):
     config = {"source": "pyproject.toml", "root_packages": ["demo"], "contracts": []}
     calls = []
-    monkeypatch.setattr(architecture.shutil, "which",
-                        lambda name: "/usr/bin/lint-imports" if name == "lint-imports" else None)
+    monkeypatch.setattr(
+        architecture.shutil,
+        "which",
+        lambda name: "/usr/bin/lint-imports" if name == "lint-imports" else None,
+    )
 
     def fake_run(command, **kwargs):
         calls.append((command, kwargs))
@@ -84,9 +87,13 @@ def test_linter_is_only_run_on_explicit_request(tmp_path, monkeypatch):
 
 
 def test_report_embeds_contracts_as_data_not_as_html(sample_graph):
-    data = {"source": "pyproject.toml", "root_packages": ["shop"], "contracts": [
-        {"name": "Layer <script>test</script>", "type": "layers", "layers": ["service", "repo"]}
-    ]}
+    data = {
+        "source": "pyproject.toml",
+        "root_packages": ["shop"],
+        "contracts": [
+            {"name": "Layer <script>test</script>", "type": "layers", "layers": ["service", "repo"]}
+        ],
+    }
     page = render_report(sample_graph, architecture=data)
     embedded = json.loads(EMBEDDED.search(page).group(1))
     assert embedded["architecture"] == data
@@ -94,8 +101,13 @@ def test_report_embeds_contracts_as_data_not_as_html(sample_graph):
 
 
 def test_build_embeds_importlinter_config_but_does_not_check_by_default(make_repo, monkeypatch):
-    root = make_repo({"demo/__init__.py": "", "demo/api.py": "from demo import util\n",
-                      "demo/util.py": ""})
+    root = make_repo(
+        {
+            "demo/__init__.py": "",
+            "demo/api.py": "from demo import util\n",
+            "demo/util.py": "",
+        }
+    )
     (root / "pyproject.toml").write_text(
         '[tool.importlinter]\nroot_package = "demo"\n'
         '[[tool.importlinter.contracts]]\n'
@@ -121,8 +133,10 @@ def test_build_check_imports_embeds_authoritative_result(make_repo, monkeypatch)
         '[tool.importlinter]\nroot_package = "demo"\n',
         encoding="utf-8",
     )
-    monkeypatch.setattr("wiringmap.cli.check_importlinter",
-                        lambda *_: {"status": "passed", "output": "All kept."})
+    monkeypatch.setattr(
+        "wiringmap.cli.check_importlinter",
+        lambda *_: {"status": "passed", "output": "All kept."},
+    )
     result = runner.invoke(app, ["build", str(root), "--check-imports", "-q"])
     assert result.exit_code == 0, result.output
     page = (root / ".wiringmap" / "report.html").read_text(encoding="utf-8")
