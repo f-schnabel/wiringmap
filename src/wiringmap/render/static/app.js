@@ -1612,6 +1612,8 @@
 
   function App() {
     const [expanded, setExpanded] = useState(initialExpanded);
+    const [presentation, setPresentation] = useState("map");
+    const [matrixCell, setMatrixCell] = useState(null);
     const [mode, setMode] = useState("imports");
     const [layouts, setLayouts] = useState({ imports: "free", calls: "layers" });
     const layoutMode = layouts[mode];
@@ -1669,7 +1671,15 @@
     }, []);
 
     const onMapSelect = useCallback((id) => select(id, false), [select]);
-    const onListSelect = useCallback((id) => select(id, true), [select]);
+    const onListSelect = useCallback((id) => {
+      setPresentation("map");
+      select(id, true);
+    }, [select]);
+    const onMatrixModule = useCallback((id) => {
+      setPresentation("map");
+      setMode("imports");
+      select(id, true);
+    }, [select]);
 
     const toggle = useCallback((id) => {
       setExpanded((prev) => {
@@ -1708,6 +1718,10 @@
         <div class="spacer"></div>
         <${SearchBox} onPick=${onListSelect} />
         <div class="controls">
+          <div class="seg" role="group" aria-label="Visualization">
+            <button aria-pressed=${presentation === "map"} onClick=${() => setPresentation("map")}>Map</button>
+            <button aria-pressed=${presentation === "matrix"} onClick=${() => setPresentation("matrix")}>Matrix</button>
+          </div>
           <div class="seg" role="group" aria-label="Arrows show">
             <button aria-pressed=${mode === "imports"} onClick=${() => setMode("imports")}>Imports</button>
             <button aria-pressed=${mode === "calls"} onClick=${() => setMode("calls")}>Calls</button>
@@ -1740,6 +1754,7 @@
       </header>
       <div class="main">
         <div class="canvas-wrap">
+          <div class="graph-layer" style=${presentation === "matrix" ? "visibility:hidden;pointer-events:none" : ""}>
           ${totalModules === 0
             ? html`<div class="empty-map">No Python files were found in this repository.</div>`
             : html`<${GraphView}
@@ -1753,13 +1768,15 @@
                 onToggle=${toggle}
                 onBusy=${setBusy}
               />`}
-          <div class="overlay tools">
+          </div>
+          ${presentation === "matrix" && html`<${MatrixView} matrix=${MATRIX} selected=${matrixCell} onCell=${setMatrixCell} />`}
+          <div class="overlay tools" hidden=${presentation === "matrix"}>
             <button class="btn" onClick=${() => setFitTick((t) => t + 1)} title="Fit the whole map on screen">Fit</button>
             <button class="btn" disabled=${totalModules > MAX_EXPAND_ALL} title=${totalModules > MAX_EXPAND_ALL ? "Too many files to show at once; open folders one by one" : "Open every folder"} onClick=${() => setExpanded(allFolders())}>Expand all</button>
             <button class="btn" onClick=${() => setExpanded(new Set())}>Collapse all</button>
           </div>
-          ${busy && html`<div class="busy">Arranging…</div>`}
-          ${DIFF
+          ${presentation === "map" && busy && html`<div class="busy">Arranging…</div>`}
+          ${presentation === "map" && DIFF
             ? html`<div class="legend" aria-label="Legend">
                 <span><i class="sw st-added"></i>+ Added</span>
                 <span><i class="sw st-changed"></i>~ Changed</span>
@@ -1768,7 +1785,7 @@
                 <span><i class="sw" style="opacity:.4"></i>Unchanged</span>
               </div>`
             : null}
-          <div class="legend" aria-label="Legend" hidden=${!!DIFF}>
+          <div class="legend" aria-label="Legend" hidden=${presentation !== "map" || !!DIFF}>
             <span><i class="sw"></i>Python file</span>
             <span><i class="sw folder"></i>Folder (double-click)</span>
             <span><i class="sw entry"></i>Entry point</span>
@@ -1779,13 +1796,14 @@
           </div>
         </div>
         <aside class="inspector" ref=${inspector} aria-label="Details">
-          ${!selected && (DIFF ? html`<${ChangesPanel} onSelect=${onListSelect} />` : html`<${Welcome} onSelect=${onListSelect} />`)}
-          ${selected && selected.startsWith("ghost:") && html`<${GhostCard} id=${selected} onSelect=${onListSelect} />`}
-          ${kind === "module" && html`<${ModuleCard} id=${selected} onSelect=${onListSelect} onCode=${(p, l, e) => setCode({ path: p, line: l, end: e })} onCenter=${center} mutedNodes=${mutedNodes} onToggleMuted=${toggleMuted} />`}
-          ${SYMBOL.has(kind) && html`<${SymbolCard} id=${selected} onSelect=${onListSelect} onCode=${(p, l, e) => setCode({ path: p, line: l, end: e })} onCenter=${center} />`}
-          ${kind === "directory" && html`<${FolderCard} id=${selected} expanded=${expanded} onSelect=${onListSelect} onToggle=${toggle} onCenter=${center} mutedNodes=${mutedNodes} onToggleMuted=${toggleMuted} />`}
-          ${kind === "external" && html`<${ExternalCard} id=${selected} onSelect=${onListSelect} mutedNodes=${mutedNodes} onToggleMuted=${toggleMuted} />`}
-          ${code && html`<${CodePanel} ...${code} onClose=${() => setCode(null)} />`}
+          ${presentation === "matrix" && html`<${MatrixInspector} matrix=${MATRIX} selected=${matrixCell} onModule=${onMatrixModule} />`}
+          ${presentation === "map" && !selected && (DIFF ? html`<${ChangesPanel} onSelect=${onListSelect} />` : html`<${Welcome} onSelect=${onListSelect} />`)}
+          ${presentation === "map" && selected && selected.startsWith("ghost:") && html`<${GhostCard} id=${selected} onSelect=${onListSelect} />`}
+          ${presentation === "map" && kind === "module" && html`<${ModuleCard} id=${selected} onSelect=${onListSelect} onCode=${(p, l, e) => setCode({ path: p, line: l, end: e })} onCenter=${center} mutedNodes=${mutedNodes} onToggleMuted=${toggleMuted} />`}
+          ${presentation === "map" && SYMBOL.has(kind) && html`<${SymbolCard} id=${selected} onSelect=${onListSelect} onCode=${(p, l, e) => setCode({ path: p, line: l, end: e })} onCenter=${center} />`}
+          ${presentation === "map" && kind === "directory" && html`<${FolderCard} id=${selected} expanded=${expanded} onSelect=${onListSelect} onToggle=${toggle} onCenter=${center} mutedNodes=${mutedNodes} onToggleMuted=${toggleMuted} />`}
+          ${presentation === "map" && kind === "external" && html`<${ExternalCard} id=${selected} onSelect=${onListSelect} mutedNodes=${mutedNodes} onToggleMuted=${toggleMuted} />`}
+          ${presentation === "map" && code && html`<${CodePanel} ...${code} onClose=${() => setCode(null)} />`}
         </aside>
       </div>
     </div>`;
