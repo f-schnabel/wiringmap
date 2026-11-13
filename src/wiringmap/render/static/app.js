@@ -1219,7 +1219,88 @@
       }
       packages.splice(index, 0, name);
     }
-    return { root, packages, cells, total, maxCount, layerPositions,
+    // Construct a hierarchy from actual module names. Package nodes aggregate
+    // all descendants while collapsed; expanded package nodes become structural
+    // headers and their modules appear exactly once under them.
+    const treeNodes = new Map();
+    const create = (id, label, kind, parent = null, moduleId = null) => {
+      const ancestor = parent && treeNodes.get(parent);
+      const item = {
+        id, label, kind, parent, moduleId, children: [],
+        depth: ancestor ? ancestor.depth + 1 : 0,
+        path: kind === "module" && moduleId ? moduleId : root + (id === "(root)" ? "" : "." + id),
+      };
+      treeNodes.set(id, item);
+      if (ancestor) ancestor.children.push(id);
+      return item;
+    };
+    for (const name of packages) create(name, name, "package");
+    for (const id of modules) {
+      if (!owners.has(id)) continue;
+      if (id === root) {
+        const item = treeNodes.get("(root)");
+        if (item) {
+          item.kind = "module";
+          item.moduleId = id;
+          item.path = id;
+        }
+        continue;
+      }
+      const parts = id.slice(root.length + 1).split(".");
+      let parent = null;
+      for (let i = 0; i < parts.length; i++) {
+        const relative = parts.slice(0, i + 1).join(".");
+        if (!treeNodes.has(relative))
+          create(relative, parts[i], "package", parent);
+        parent = relative;
+      }
+      const info = nodes.get(id);
+      const label = info?.attrs?.is_package ? "__init__.py" : info?.name || parts[parts.length - 1] + ".py";
+      create("module:" + id, label, "module", parent, id);
+    }
+    // A plain file with no nested modules should not require an extra click.
+    for (const node of [...treeNodes.values()].reverse()) {
+      if (node.kind !== "package" || node.children.length !== 1) continue;
+      const child = treeNodes.get(node.children[0]);
+      if (child?.kind !== "module" || child.moduleId !== root + "." + node.id) continue;
+      node.kind = "module";
+      node.moduleId = child.moduleId;
+      node.path = child.path;
+      node.children = [];
+      treeNodes.delete(child.id);
+    }
+    const modulePaths = new Map();
+    for (const node of treeNodes.values()) {
+      if (node.kind !== "module") continue;
+      const path = [];
+      let current = node;
+      while (current) {
+        path.unshift(current.id);
+        current = current.parent ? treeNodes.get(current.parent) : null;
+      }
+      modulePaths.set(node.moduleId, path);
+    }
+    const imports = G.edges.filter((edge) =>
+      edge.kind === "imports" && modulePaths.has(edge.source) && modulePaths.has(edge.target));
+
+    // Use the same topological ordering within each expanded package, so the
+    // triangle remains useful at deeper levels as well.
+    for (const node of treeNodes.values()) {
+      if (!node.children.length) continue;
+      const pairs = [];
+      for (const edge of imports) {
+        const sourcePath = modulePaths.get(edge.source);
+        const targetPath = modulePaths.get(edge.target);
+        if (sourcePath[node.depth] !== node.id || targetPath[node.depth] !== node.id) continue;
+        const from = sourcePath[node.depth + 1], to = targetPath[node.depth + 1];
+        if (from && to && from !== to) pairs.push([from, to]);
+      }
+      const ranks = layerRanks(node.children, pairs);
+      node.children.sort((a, b) =>
+        ranks.get(a) - ranks.get(b) || treeNodes.get(a).label.localeCompare(treeNodes.get(b).label));
+    }
+    const tree = { nodes: treeNodes, modulePaths, imports };
+    return { root, packages, cells, total, maxCount, layerPositions, tree,
       orderSource: layerPositions.size ? "Import Linter layers" : "dependency topology" };
   }
 
