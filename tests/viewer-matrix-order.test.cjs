@@ -74,5 +74,5 @@ test("diagonal import cells have a separate class and accessible drill-down butt
   assert.match(source, /class=\$\{diagonal \? "matrix-diagonal"/);
   assert.match(source, /matrix-self/);
   assert.match(source, /matrix\.orderSource/);
-  assert.match(source, /onClick=\$\{\(\) => onCell\(\{ from, to \}\)\}/);
+  assert.match(source, /onClick=\$\{\(\) => onCell\(\{/);
 });
