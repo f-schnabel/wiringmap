@@ -1081,10 +1081,6 @@
       }
       break;
     }
-    const packages = [...groups].sort((a, b) => {
-      const x = layerPositions.get(a) ?? Infinity, y = layerPositions.get(b) ?? Infinity;
-      return x - y || a.localeCompare(b);
-    });
     const cells = new Map();
     let total = 0;
     for (const e of G.edges) {
@@ -1102,7 +1098,43 @@
     for (const cell of cells.values()) cell.imports.sort((a, b) =>
       a.source.localeCompare(b.source) || a.target.localeCompare(b.target));
     const maxCount = Math.max(1, ...[...cells.values()].map((v) => v.count));
-    return { root, packages, cells, total, maxCount, layerPositions };
+    const names = [...groups];
+    const crossImports = [...cells.values()].filter((cell) => cell.from !== cell.to);
+    const rank = layerRanks(names, crossImports.map((cell) => [cell.from, cell.to]));
+    const lexical = (a, b) => a.localeCompare(b);
+    const topology = (a, b) => rank.get(a) - rank.get(b) || lexical(a, b);
+    // Without contracts, the condensation DAG ranks packages by dependency:
+    // importers appear above their imports, except for unavoidable cycles.
+    const packages = names.filter((name) => layerPositions.has(name))
+      .sort((a, b) => layerPositions.get(a) - layerPositions.get(b) || topology(a, b));
+    const unlisted = names.filter((name) => !layerPositions.has(name)).sort(topology);
+
+    if (packages.length === 0) packages.push(...unlisted);
+    else for (const name of unlisted) {
+      // Insert unlisted modules (notably the package __init__) where they
+      // create the fewest arrows below the diagonal. Do not reorder declared
+      // layers, as that would hide real layer violations.
+      let index = 0, smallest = Infinity;
+      for (let i = 0; i <= packages.length; i++) {
+        let below = 0;
+        for (const item of crossImports) {
+          if (item.from === name) {
+            const other = packages.indexOf(item.to);
+            if (other !== -1 && other < i) below += item.count;
+          } else if (item.to === name) {
+            const other = packages.indexOf(item.from);
+            if (other !== -1 && other >= i) below += item.count;
+          }
+        }
+        if (below <= smallest) {
+          smallest = below;
+          index = i;
+        }
+      }
+      packages.splice(index, 0, name);
+    }
+    return { root, packages, cells, total, maxCount, layerPositions,
+      orderSource: layerPositions.size ? "Import Linter layers" : "dependency topology" };
   }
 
   const MATRIX = dependencyMatrix();
@@ -1136,9 +1168,10 @@
                   const count = cell?.count || 0;
                   const level = count ? Math.min(5, Math.max(1, Math.ceil(Math.log1p(count) / Math.log1p(matrix.maxCount) * 5))) : 0;
                   const chosen = selected && selected.from === from && selected.to === to;
-                  return html`<td>
+                  const diagonal = from === to;
+                  return html`<td class=${diagonal ? "matrix-diagonal" : ""}>
                     ${count
-                      ? html`<button class=${"matrix-value heat-" + level + (chosen ? " active" : "")}
+                      ? html`<button class=${"matrix-value heat-" + level + (diagonal ? " matrix-self" : "") + (chosen ? " active" : "")}
                           aria-pressed=${!!chosen}
                           title=${from + " imports " + to + ": " + count + " module imports" + (cell.typeOnly ? " (" + cell.typeOnly + " type-only)" : "")}
                           aria-label=${from + " imports " + to + ": " + count + " module imports"}
@@ -1151,8 +1184,8 @@
             })}</tbody>
           </table></div>`
         : html`<p class="hint">No packages match this filter.</p>`}
-      <div class="matrix-foot">Color intensity represents the number of direct module imports, not contract violations.
-        ${matrix.packages.length} package groups · ${plural(matrix.total, "import")}.</div>
+      <div class="matrix-foot">Blue intensity = direct imports · amber diagonal = within-package imports · ordered by ${matrix.orderSource}.
+        Counts are not contract violations. ${matrix.packages.length} package groups · ${plural(matrix.total, "import")}.</div>
     </div>`;
   }
 
@@ -1179,7 +1212,7 @@
                 </li>`)}</ul>
               <p class="hint">Use <code>lint-imports</code> for authoritative contract results. This matrix does not independently flag violations.</p>
             </${Block}>`
-          : html`<p class="hint">No Import Linter configuration found. Package ordering is alphabetical.</p>`}
+          : html`<p class="hint">No Import Linter configuration found. Package ordering follows dependency topology.</p>`}
         ${check && html`<${Block} title="Import Linter check">
           <p><b>${check.status}</b> ${check.command || ""}</p>
           <pre class="matrix-output">${check.output || ""}</pre>
