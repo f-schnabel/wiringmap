@@ -44,9 +44,11 @@ folder ignores itself, so it is never committed by accident.
 
 ## What you get
 
-- **Mouse navigation.** Left-drag anywhere to pan, right-drag a node or expanded
-  folder to move it, and click nodes to inspect them. Edges never receive pointer
-  events or block a node underneath. Right-click gestures are available on desktop.
+- **Mouse navigation.** Left-drag anywhere to pan. To move a node or an expanded
+  folder, double-click it and **hold the second press while dragging**. A quick
+  double-click without dragging still opens or closes folders, and a normal click
+  selects a node. Edges remain click-through, so they never block a node underneath.
+  The double-click-and-hold gesture is intended for desktop mouse input.
 - **A map of the whole project.** Files are boxes inside their folders, and arrows show
   imports. Switch to **Calls** to see which files call into which; thicker arrows mean
   more calls. Calls start in a **Top down** layout (callers above callees).
