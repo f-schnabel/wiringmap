@@ -50,6 +50,18 @@ folder ignores itself, so it is never committed by accident.
   Switch between **Free** and **Top down** for either view. Cyclic dependencies
   share a layer since no ordering can make every edge in a cycle point down. Large projects start with folders closed (double-click to open one), and
   tests, docs and migrations stay closed so you see the application first.
+- **Stable camera.** Expanding folders and changing graph layouts, filters or node
+  sizes no longer automatically zooms out or pans. The first render fits once;
+  use **Fit** explicitly to reframe the whole graph. Navigating to a file
+  centers it without changing zoom.
+- **Size by links.** An optional logarithmic overlay emphasizes nodes with many
+  distinct direct incoming and outgoing connections. Sizes are capped and do not
+  change when transitive arrows are hidden.
+- **Static import cycles.** Highlight cyclic modules and cycle arrows in red,
+  including a collapsed folder if it contains cyclic modules. Details list the
+  other modules in the cycle. This uses static imports, including type-only
+  `TYPE_CHECKING` references, so it does not imply a runtime circular-import
+  failure.
 - **Hide transitive imports** (on by default) to simplify the map without deleting
   underlying dependency data: if A imports B and C, and B imports C, the direct
   A → C arrow is omitted. The filter works on the visible graph, including collapsed
