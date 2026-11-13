@@ -1449,7 +1449,7 @@
                   const diagonal = from.id === to.id;
                   return html`<td class=${diagonal ? "matrix-diagonal" : ""}>
                     ${count
-                      ? html`<button class=${"matrix-value heat-" + level + (chosen ? " active" : "")}
+                      ? html`<button class=${"matrix-value heat-" + level + (diagonal ? " matrix-self" : "") + (chosen ? " active" : "")}
                           aria-pressed=${!!chosen}
                           title=${from.path + " imports " + to.path + ": " + count + " direct imports" + (cell.typeOnly ? " (" + cell.typeOnly + " type-only)" : "")}
                           aria-label=${from.path + " imports " + to.path + ": " + count + " direct imports"}
