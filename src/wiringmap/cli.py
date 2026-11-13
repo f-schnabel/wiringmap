@@ -155,9 +155,15 @@ def build(
     architecture = read_importlinter(path)
     if check_imports:
         if architecture is None:
-            architecture = {"source": "", "root_packages": [], "contracts": [],
-                            "check": {"status": "unavailable",
-                                      "output": "No Import Linter configuration found."}}
+            architecture = {
+                "source": "",
+                "root_packages": [],
+                "contracts": [],
+                "check": {
+                    "status": "unavailable",
+                    "output": "No Import Linter configuration found.",
+                },
+            }
         else:
             architecture["check"] = check_importlinter(path, architecture)
     _write(target, render_report(graph, sources, architecture=architecture), quiet)
