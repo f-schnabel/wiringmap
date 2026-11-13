@@ -90,10 +90,19 @@ folder ignores itself, so it is never committed by accident.
 
 ## Dependency matrix and Import Linter
 
-Switch from **Map** to **Matrix** in the report toolbar. Rows are importing packages;
-columns are imported packages. Cells show counts of **direct module imports**, including
-type-only imports; click any non-empty cell to see its exact importer and imported modules.
-Click a module in the inspector to return to the map focused on that file.
+Switch from **Map** to **Matrix** in the report toolbar. Rows import columns,
+and cells count **direct module imports**, including type-only imports. Packages start
+collapsed: click the chevron beside a package in either the row or column header to
+expand it into its nested packages and Python files, including `__init__.py`.
+Rows and columns expand together; click again to collapse. Use **Expand one level**
+or **Collapse all** to navigate larger projects, or filter by package/file name
+to reveal matching paths automatically.
+
+When expanded, a package heading becomes a structural header: its imports are
+represented by its visible descendants instead, avoiding double-counting. Click any
+non-empty cell to inspect the exact importer and imported modules, then click a module
+in the inspector to return to its location on the map. Expansion choices remain when
+switching between Map and Matrix.
 
 Wiringmap automatically discovers Import Linter configuration from `setup.cfg`,
 `.importlinter`, or `pyproject.toml`. When available, its **root package** scopes
