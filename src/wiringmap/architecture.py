@@ -68,7 +68,9 @@ def read_importlinter(root: Path) -> dict[str, Any] | None:
 
         roots = options.get("root_packages", options.get("root_package", []))
         if isinstance(roots, str):
-            roots = [value.strip() for value in roots.replace(",", "\n").splitlines() if value.strip()]
+            roots = [
+                value.strip() for value in roots.replace(",", "\n").splitlines() if value.strip()
+            ]
         if not isinstance(roots, list):
             roots = []
         return {
