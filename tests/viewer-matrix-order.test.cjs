@@ -71,7 +71,7 @@ test("static cycles do not prevent sorting or remove any imports", () => {
 });
 
 test("diagonal import cells have a separate class and accessible drill-down buttons", () => {
-  assert.match(source, /class=\$\{diagonal \? "matrix-diagonal"/);
+  assert.match(source, /"matrix-depth-" \+ depth \+ \(diagonal \? " matrix-diagonal"/);
   assert.match(source, /matrix-self/);
   assert.match(source, /matrix\.orderSource/);
   assert.match(source, /onClick=\$\{\(\) => onCell\(\{/);
