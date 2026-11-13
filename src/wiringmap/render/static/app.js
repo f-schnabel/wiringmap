@@ -1406,7 +1406,6 @@
           <span class="matrix-node-name">${entry.label}</span>
         </button>`
       : html`<span class="matrix-leaf" title=${entry.path}>
-          <span class="matrix-file-mark" aria-hidden="true">·</span>
           <span class="matrix-node-name">${entry.label}</span>
         </span>`;
     return html`<div class="matrix-view">
@@ -1428,14 +1427,15 @@
       ${entries.length
         ? html`<div class="matrix-scroll"><table class="matrix-table" aria-label="Module import dependencies by package">
             <thead><tr><th class="matrix-corner" scope="col">Imports ↓ / →</th>
-              ${entries.map((entry) => html`<th scope="col" class=${entry.kind === "package" ? "matrix-package-heading" : ""}
+              ${entries.map((entry) => html`<th scope="col"
+                class=${"matrix-depth-" + Math.min(5, entry.depth) + (entry.kind === "package" ? " matrix-package-heading" : "")}
                 >${label(entry)}</th>`)}
               <th scope="col">Total</th>
             </tr></thead>
             <tbody>${entries.map((from) => {
               const rowTotal = data.rowTotals.get(from.id) || 0;
               return html`<tr class=${from.expanded ? "matrix-group-open" : ""}>
-                <th scope="row">
+                <th scope="row" class=${"matrix-depth-" + Math.min(5, from.depth)}>
                   <div class="matrix-row-name" style=${"padding-left:" + from.depth * 13 + "px"}>
                     ${label(from)}
                   </div>
@@ -1447,7 +1447,8 @@
                     Math.ceil(Math.log1p(count) / Math.log1p(data.maxCount) * 5))) : 0;
                   const chosen = selected && selected.from === from.id && selected.to === to.id;
                   const diagonal = from.id === to.id;
-                  return html`<td class=${diagonal ? "matrix-diagonal" : ""}>
+                  const depth = Math.min(5, Math.max(from.depth, to.depth));
+                  return html`<td class=${"matrix-depth-" + depth + (diagonal ? " matrix-diagonal" : "")}>
                     ${count
                       ? html`<button class=${"matrix-value heat-" + level + (diagonal ? " matrix-self" : "") + (chosen ? " active" : "")}
                           aria-pressed=${!!chosen}
@@ -1465,7 +1466,7 @@
           </table></div>`
         : html`<p class="hint">No packages or modules match this filter.</p>`}
       <div class="matrix-foot">
-        Amber diagonal = imports within the same visible node · blue = between nodes · ordered by ${matrix.orderSource}.
+        Amber diagonal = within-node imports · depth colors = package nesting · blue intensity = import count · ordered by ${matrix.orderSource}.
         ${entries.length} visible nodes · ${plural(data.total, "shown import")} of ${matrix.total} total.
         Counts are not contract violations.
       </div>
