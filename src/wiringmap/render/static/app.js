@@ -804,15 +804,15 @@
     cy.edges().unselectify().panify();
   }
 
-  // Right-button drag repositions a node (or an expanded folder's children).
-  // Ordinary left-button dragging always pans. Edges never capture gestures.
-  function attachRightDrag(cy) {
-    let drag = null;
+  // Left-drag pans. A second left press on the same node (within 400ms)
+  // followed by movement repositions that node, or a folder's leaf nodes.
+  // A quick double-click with no movement still expands/collapses folders.
+  function attachDoubleClickDrag(cy, onToggle) {
     const canvas = cy.container();
-    const preventMenu = (event) => event.preventDefault();
-    canvas.addEventListener("contextmenu", preventMenu);
+    const maxInterval = 400, maxDistance = 14, moveThreshold = 5;
+    let lastTap = null, drag = null, skipSecondTap = false;
 
-    const pointer = (event) => {
+    const point = (event) => {
       if (event.renderedPosition) return event.renderedPosition;
       if (event.cyRenderedPosition) return event.cyRenderedPosition;
       const native = event.originalEvent;
@@ -820,36 +820,108 @@
       const rect = canvas.getBoundingClientRect();
       return { x: native.clientX - rect.left, y: native.clientY - rect.top };
     };
-    cy.on("cxttapstart", "node", (event) => {
-      if (event.originalEvent?.touches?.length) return;
-      const start = pointer(event);
+    const mousePoint = (event) => {
+      const rect = canvas.getBoundingClientRect();
+      return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+    };
+    const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+    const isPrimaryMouse = (event) => {
+      const native = event.originalEvent;
+      return native?.pointerType !== "touch" &&
+        !native?.touches?.length &&
+        (native?.button === undefined || native.button === 0);
+    };
+
+    const removeWindowListeners = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onRelease);
+      window.removeEventListener("blur", cancel);
+    };
+    const finish = (toggle) => {
+      if (!drag) return;
+      const completed = drag;
+      drag = null;
+      removeWindowListeners();
+      cy.userPanningEnabled(completed.wasPannable);
+      if (toggle && !completed.moved &&
+          (completed.node.data("kind") === "folder" || completed.node.data("kind") === "group"))
+        onToggle(completed.node.id());
+    };
+    const cancel = () => finish(false);
+    const onMove = (event) => {
+      if (!drag) return;
+      if (event.buttons !== undefined && !(event.buttons & 1)) {
+        finish(false);
+        return;
+      }
+      const now = mousePoint(event);
+      const dx = now.x - drag.start.x, dy = now.y - drag.start.y;
+      if (!drag.moved && Math.hypot(dx, dy) < moveThreshold) return;
+      drag.moved = true;
+      const zoom = cy.zoom();
+      cy.batch(() => {
+        drag.items.forEach((node, index) => {
+          if (!node.removed()) node.position({
+            x: drag.positions[index].x + dx / zoom,
+            y: drag.positions[index].y + dy / zoom,
+          });
+        });
+      });
+    };
+    const onRelease = (event) => {
+      // Apply the final delta even if the cursor left the graph.
+      if (drag && event.clientX !== undefined) onMove({ ...event, buttons: 1 });
+      finish(true);
+    };
+
+    const onStart = (event) => {
+      if (!isPrimaryMouse(event)) {
+        lastTap = null;
+        return;
+      }
+      const start = point(event);
       if (!start) return;
+      const prior = lastTap;
+      lastTap = null;
+      const now = Date.now();
+      const doublePress = prior && prior.id === event.target.id() &&
+        now - prior.at <= maxInterval && distance(start, prior.point) <= maxDistance;
+      if (!doublePress) {
+        skipSecondTap = false;
+        return;
+      }
       const node = event.target;
       const items = node.isParent()
         ? node.descendants().filter((item) => !item.isParent()).toArray()
         : [node];
       drag = {
-        start, items,
+        node, start, items,
         positions: items.map((item) => ({ ...item.position() })),
+        moved: false, wasPannable: cy.userPanningEnabled(),
       };
-    });
-    cy.on("cxtdrag", (event) => {
-      if (!drag) return;
-      const now = pointer(event);
-      if (!now) return;
-      const dx = (now.x - drag.start.x) / cy.zoom();
-      const dy = (now.y - drag.start.y) / cy.zoom();
-      cy.batch(() => {
-        drag.items.forEach((node, index) => {
-          if (!node.removed()) node.position({
-            x: drag.positions[index].x + dx,
-            y: drag.positions[index].y + dy,
-          });
-        });
-      });
-    });
-    cy.on("cxttapend", () => { drag = null; });
-    return () => canvas.removeEventListener("contextmenu", preventMenu);
+      skipSecondTap = true;
+      cy.userPanningEnabled(false);
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onRelease);
+      window.addEventListener("blur", cancel);
+    };
+    const onTap = (event) => {
+      if (skipSecondTap) {
+        skipSecondTap = false;
+        return;
+      }
+      if (!isPrimaryMouse(event)) return;
+      const position = point(event);
+      if (position) lastTap = { id: event.target.id(), point: position, at: Date.now() };
+    };
+    cy.on("tapstart", "node", onStart);
+    cy.on("tap", "node", onTap);
+    return () => {
+      finish(false);
+      removeWindowListeners();
+      cy.off("tapstart", "node", onStart);
+      cy.off("tap", "node", onTap);
+    };
   }
 
   function GraphView({ view, focus, centerTick, theme, fitTick, layoutMode, focusScope, onSelect, onToggle, onBusy }) {
@@ -873,14 +945,13 @@
       });
       cy.on("tap", "node", (ev) => handlers.current.onSelect(ev.target.id()));
       cy.on("tap", (ev) => ev.target === cy && handlers.current.onSelect(null));
-      cy.on("dbltap", "node[kind = 'folder'], node[kind = 'group']", (ev) => handlers.current.onToggle(ev.target.id()));
-      const detachRightDrag = attachRightDrag(cy);
+      const detachDoubleClickDrag = attachDoubleClickDrag(cy, (id) => handlers.current.onToggle(id));
       const scheme = window.matchMedia("(prefers-color-scheme: dark)");
       const restyle = () => cy.style(graphStyle());
       scheme.addEventListener("change", restyle);
       cyRef.current = cy;
       window.wiringmap = { cy, graph: G }; // handy in the browser console
-      return () => (detachRightDrag(), scheme.removeEventListener("change", restyle), cy.destroy());
+      return () => (detachDoubleClickDrag(), scheme.removeEventListener("change", restyle), cy.destroy());
     }, []);
 
     useEffect(() => {
@@ -1885,7 +1956,7 @@
       <h2>${G.root_name}</h2>
       <p>A map of how this code is wired, made by wiringmap ${G.generator.version}${when ? " on " + when : ""}.</p>
       <ol>
-        <li><b>Left-drag</b> pans anywhere, <b>right-drag a box</b> moves it. Lines never intercept clicks.</li>
+        <li><b>Left-drag</b> pans. <b>Double-click and hold the second press</b>, then drag to move a module or folder. A quick double-click still expands folders. Lines never intercept clicks.</li>
         <li><b>Focus folder</b> shows only the folder's modules and their internal connections; <b>Focus module</b> shows its direct neighbors. <b>Show all</b> restores the full graph without rescanning.</li>
         <li><b>Boxes are Python files.</b> Dashed boxes are folders: double-click one to open it.</li>
         <li><b>Arrows point to what a file imports.</b> Switch to “Calls” for call relationships. Calls start in a top-down layout; select “Top down” for Imports too.</li>
