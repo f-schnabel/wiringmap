@@ -44,20 +44,22 @@ folder ignores itself, so it is never committed by accident.
 
 ## What you get
 
-- **Pan and move separately.** Pan mode is the default: drag on background, nodes,
-  or arrows to move the viewport. Switch to **Move nodes** to reposition files and
-  folders; dragging background or arrows still pans. Arrows are never selectable,
-  and clicking nodes still opens their details.
+- **Mouse navigation.** Left-drag anywhere to pan, right-drag a node or expanded
+  folder to move it, and click nodes to inspect them. Edges never receive pointer
+  events or block a node underneath. Right-click gestures are available on desktop.
 - **A map of the whole project.** Files are boxes inside their folders, and arrows show
   imports. Switch to **Calls** to see which files call into which; thicker arrows mean
   more calls. Calls start in a **Top down** layout (callers above callees).
   Switch between **Free** and **Top down** for either view. Cyclic dependencies
   share a layer since no ordering can make every edge in a cycle point down. Large projects start with folders closed (double-click to open one), and
   tests, docs and migrations stay closed so you see the application first.
-- **Stable camera.** Expanding folders and changing graph layouts, filters or node
-  sizes no longer automatically zooms out or pans. The first render fits once;
-  use **Fit** explicitly to reframe the whole graph. Navigating to a file
-  centers it without changing zoom.
+- **Stable camera.** Expanding folders and changing layouts or filters preserves
+  the current zoom and pan. Initial load and an explicit **Focus/Show all** change
+  reframe the graph; use **Fit** to reframe it any other time.
+- **Focus without rescanning.** A folder's **Focus folder** action shows only
+  modules inside that folder and their internal relationships. **Focus module**
+  shows the selected file and its direct import/call neighbors. **Show all**
+  restores the entire map, entirely from the data already in the HTML report.
 - **Size by links.** An optional logarithmic overlay emphasizes nodes with many
   distinct direct incoming and outgoing connections. Sizes are capped and do not
   change when transitive arrows are hidden.
@@ -95,7 +97,11 @@ Click a module in the inspector to return to the map focused on that file.
 
 Wiringmap automatically discovers Import Linter configuration from `setup.cfg`,
 `.importlinter`, or `pyproject.toml`. When available, its **root package** scopes
-the matrix and its **Layers** contract determines package ordering. The inspector
+the matrix and its **Layers** contract determines package ordering. Without
+configured layers, the packages are sorted by dependency topology, with importers
+before their imports (cycles are the unavoidable exception). Unlisted packages
+are inserted to minimize arrows below the diagonal. The diagonal uses an amber
+shade for imports within the same package. The inspector
 shows the configured contracts, including protected interfaces, forbidden imports,
 and independence constraints. The matrix does **not** independently implement
 these contracts or claim that individual cells violate them; the heatmap indicates
