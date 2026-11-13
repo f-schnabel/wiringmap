@@ -475,6 +475,7 @@
         },
       },
       { selector: "node[kind = 'external']", style: { "background-opacity": 0, "border-style": "dotted", color: c("--muted") } },
+      { selector: "node[h]", style: { height: "data(h)" } },
       { selector: "node[?entry]", style: { "border-color": c("--ok"), "border-width": 2 } },
       { selector: "node[?error]", style: { "border-color": c("--danger"), "border-style": "dashed", "border-width": 2 } },
       { selector: "node[st = 'added']", style: { "background-color": c("--add-bg"), "border-color": c("--add"), "border-width": 1.5 } },
@@ -485,6 +486,7 @@
       { selector: "node[?chg]", style: { "border-color": c("--chg"), "border-width": 1.5 } },
       { selector: "node[?dim]", style: { opacity: 0.4 } },
       { selector: "node[?muted]", style: { "border-style": "dotted", "border-width": 2, "border-color": c("--faint") } },
+      { selector: "node[?cycle]", style: { "border-color": c("--danger"), "border-width": 2.5 } },
       {
         selector: "edge",
         style: {
@@ -498,6 +500,7 @@
         },
       },
       { selector: "edge[?typeOnly]", style: { "line-style": "dashed" } },
+      { selector: "edge[?cycle]", style: { "line-color": c("--danger"), "target-arrow-color": c("--danger"), opacity: 0.95 } },
       { selector: ".faded", style: { opacity: 0.13 } },
       { selector: "edge.faded", style: { opacity: 0.06 } },
       { selector: "node.nb-out", style: { "border-color": c("--accent"), "border-width": 2 } },
@@ -599,7 +602,7 @@
       const items = children.map((n) => {
         if (n.isParent()) return { id: n.id(), ...place(n) };
         const width = Math.max(70, Number(n.data("w")) || 110);
-        const height = n.data("kind") === "folder" ? 44 : 32;
+        const height = Number(n.data("h")) || (n.data("kind") === "folder" ? 44 : 32);
         return { id: n.id(), width, height, positions: [{ id: n.id(), x: width / 2, y: height / 2 }] };
       });
       const owner = new Map();
@@ -807,13 +810,22 @@
       const layoutChanged = previousLayout.current !== layoutMode;
       previousLayout.current = layoutMode;
       if (sameNodes) {
+        const shown = new Map(view.elements.filter((e) => e.group === "nodes").map((e) => [e.data.id, e.data]));
+        const resized = [...cy.nodes()].some((n) =>
+          n.data("w") !== shown.get(n.id())?.w || n.data("h") !== shown.get(n.id())?.h);
         cy.batch(() => {
           cy.edges().remove();
           cy.add(view.elements.filter((e) => e.group === "edges"));
-          const shown = new Map(view.elements.filter((e) => e.group === "nodes").map((e) => [e.data.id, e.data]));
-          cy.nodes().forEach((n) => n.data("muted", !!shown.get(n.id())?.muted));
+          cy.nodes().forEach((n) => {
+            const updated = shown.get(n.id());
+            if (updated) n.data({
+              muted: !!updated.muted, cycle: !!updated.cycle,
+              w: updated.w, h: updated.h, connections: updated.connections,
+            });
+          });
         });
-        if (layoutMode !== "layers" && !layoutChanged) return;
+        // Size changes require a relayout, but recoloring does not.
+        if (layoutMode !== "layers" && !layoutChanged && !resized) return;
         onBusy(true);
         const timer = setTimeout(() => arrange(cy, false, () => onBusy(false), layoutMode), 30);
         return () => clearTimeout(timer);
@@ -1085,6 +1097,7 @@
     const uses = (out.imports.get(id) || []).filter((e) => kindOf(e.target) === "module");
     const usedBy = (inn.imports.get(id) || []).filter((e) => kindOf(e.source) === "module");
     const symbols = symbolKids(id);
+    const cycle = IMPORT_CYCLES.byModule.get(id) || [];
     const classes = symbols.filter((k) => kindOf(k) === "class").length;
     let functions = 0;
     for (const n2 of G.nodes) if (SYMBOL.has(n2.kind) && n2.kind !== "class" && moduleOf(n2.id) === id) functions += 1;
@@ -1109,6 +1122,11 @@
         <button class="btn" onClick=${onCenter}>Show on map</button>
         <${EdgeToggle} id=${id} mutedNodes=${mutedNodes} onToggleMuted=${onToggleMuted} />
       </div>
+      ${cycle.length > 0 && html`<${Block} title="Static import cycle" count=${cycle.length}>
+        <p class="hint">These modules are mutually reachable through imports (including type-only imports).</p>
+        <ul class="list">${cycle.filter((member) => member !== id).map((member) =>
+          html`<${Row} id=${member} name=${moduleLabel(member)} onSelect=${onSelect} />`)}</ul>
+      </${Block}>`}
       <${Block} title="Uses" count=${uses.length} dot="out" hint=${uses.length ? null : "Imports no other file in this project."}>
         <ul class="list">${uses.map((e) => html`<${Row} id=${e.target} name=${moduleLabel(e.target)} meta=${e.attrs && e.attrs.type_only ? "types only" : ""} onSelect=${onSelect} />`)}</ul>
       </${Block}>
@@ -1360,6 +1378,8 @@
       <ol>
         <li><b>Boxes are Python files.</b> Dashed boxes are folders: double-click one to open it.</li>
         <li><b>Arrows point to what a file imports.</b> Switch to “Calls” for call relationships. Calls start in a top-down layout; select “Top down” for Imports too.</li>
+        <li><b>Fit</b> reframes the entire graph; expanding or collapsing folders preserves the current camera.</li>
+        <li><b>Size by links</b> makes heavily connected nodes larger, and <b>Cycles</b> highlights static import cycles in red.</li>
         <li><b>Hide transitive</b> in Imports mode to remove redundant arrows (A → C when A → B → C). The original dependencies remain available in the details.</li>
         <li><b>Hide connections</b> in a file or folder’s details to remove its arrows without removing the node.</li>
         <li><b>Click a file</b> to see what it <span style="color:var(--accent-text)">uses</span> and what <span style="color:var(--usedby)">uses it</span>, and what is inside.</li>
@@ -1420,6 +1440,8 @@
     const layoutMode = layouts[mode];
     const [showExternal, setShowExternal] = useState(false);
     const [hideTransitive, setHideTransitive] = useState(true);
+    const [sizeByConnections, setSizeByConnections] = useState(false);
+    const [markCycles, setMarkCycles] = useState(true);
     const [mutedNodes, setMutedNodes] = useState(() => new Set());
     const [selected, setSelected] = useState(null);
     const [code, setCode] = useState(null);
@@ -1439,8 +1461,8 @@
     }, [theme]);
 
     const view = useMemo(
-      () => buildView(expanded, mode, showExternal, mutedNodes, hideTransitive),
-      [expanded, mode, showExternal, mutedNodes, hideTransitive]
+      () => buildView(expanded, mode, showExternal, mutedNodes, hideTransitive, sizeByConnections, markCycles),
+      [expanded, mode, showExternal, mutedNodes, hideTransitive, sizeByConnections, markCycles]
     );
 
     const focus = useMemo(() => {
@@ -1523,6 +1545,12 @@
             <input type="checkbox" checked=${hideTransitive} onChange=${(e) => setHideTransitive(e.target.checked)} />
             Hide transitive ${hideTransitive && view.omittedLinks > 0 ? `(${view.omittedLinks})` : ""}
           </label>`}
+          <label class="check" title="Enlarge boxes with more distinct direct incoming and outgoing connections, before transitive reduction.">
+            <input type="checkbox" checked=${sizeByConnections} onChange=${(e) => setSizeByConnections(e.target.checked)} /> Size by links
+          </label>
+          ${mode === "imports" && html`<label class="check" title="Highlight strongly connected modules, including TYPE_CHECKING imports. Collapsed folders are marked if they contain a cycle.">
+            <input type="checkbox" checked=${markCycles} onChange=${(e) => setMarkCycles(e.target.checked)} /> Cycles (${IMPORT_CYCLES.groups.length})
+          </label>`}
           <label class="check"><input type="checkbox" checked=${showExternal} onChange=${(e) => setShowExternal(e.target.checked)} /> Packages</label>
           <button class="btn icon" title=${"Theme: " + theme} aria-label=${"Theme: " + theme} onClick=${() => setTheme(THEMES[(THEMES.indexOf(theme) + 1) % THEMES.length])}>
             ${theme === "dark"
@@ -1568,6 +1596,7 @@
             <span><i class="sw folder"></i>Folder (double-click)</span>
             <span><i class="sw entry"></i>Entry point</span>
             <span><i class="sw error"></i>Not parsed</span>
+            ${mode === "imports" && markCycles && html`<span><i class="sw error"></i>Import cycle</span>`}
             <span><i class="ln"></i>Uses</span>
             <span><i class="ln in"></i>Used by</span>
           </div>
