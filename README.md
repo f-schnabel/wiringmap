@@ -103,10 +103,11 @@ represented by its visible descendants instead, avoiding double-counting. Each
 nesting depth has a different subtle background tint across rows, columns and cells;
 the deeper of the two axes determines a cell's tint. Dependency heatmap intensity
 and amber self-import diagonals remain visible. Only expandable packages have a
-chevron; leaf modules have no decorative expansion marker. Click any non-empty cell
-to inspect the exact importer and imported modules, then click a module in the
-inspector to return to its location on the map. Expansion choices remain when
-switching between Map and Matrix.
+chevron; leaf modules have no decorative expansion marker. Column headings are
+vertical so even deeply expanded matrices can keep compact cells; the full name is
+available on hover. Click any non-empty cell to inspect the exact importer and
+imported modules, then click a module in the inspector to return to its location
+on the map. Expansion choices remain when switching between Map and Matrix.
 
 Wiringmap automatically discovers Import Linter configuration from `setup.cfg`,
 `.importlinter`, or `pyproject.toml`. When available, its **root package** scopes
