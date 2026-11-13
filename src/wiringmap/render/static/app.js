@@ -1375,53 +1375,98 @@
 
   const MATRIX = dependencyMatrix();
 
-  function MatrixView({ matrix, selected, onCell }) {
+
+  function MatrixView({ matrix, selected, onCell, expanded, onExpandedChange }) {
     const [filter, setFilter] = useState("");
-    const query = filter.trim().toLowerCase();
-    const packages = matrix.packages.filter((name) => !query || name.toLowerCase().includes(query));
+    const data = useMemo(() => matrixVisible(matrix, expanded, filter), [matrix, expanded, filter]);
+    const entries = data.entries;
+    const changeExpansion = (next) => {
+      onExpandedChange(next);
+      onCell(null);
+    };
+    const toggle = (id) => {
+      const next = new Set(expanded);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      changeExpansion(next);
+    };
+    const expandOneLevel = () => {
+      const next = new Set(expanded);
+      for (const entry of entries)
+        if (entry.kind === "package" && !entry.expanded) next.add(entry.id);
+      changeExpansion(next);
+    };
+    const label = (entry) => entry.kind === "package"
+      ? html`<button class="matrix-tree-toggle" title=${entry.path}
+          aria-label=${(entry.expanded ? "Collapse " : "Expand ") + entry.path}
+          aria-expanded=${entry.expanded} onClick=${() => toggle(entry.id)}>
+          <span class="matrix-chevron" aria-hidden="true">${entry.expanded ? "▾" : "▸"}</span>
+          <span class="matrix-node-name">${entry.label}</span>
+        </button>`
+      : html`<span class="matrix-leaf" title=${entry.path}>
+          <span class="matrix-file-mark" aria-hidden="true">·</span>
+          <span class="matrix-node-name">${entry.label}</span>
+        </span>`;
     return html`<div class="matrix-view">
       <div class="matrix-head">
         <div>
           <h2>Dependency matrix</h2>
-          <p>Rows import columns · direct module imports, including type-only imports.</p>
+          <p>Rows import columns · expand packages in either axis to inspect nested modules.</p>
         </div>
-        <input class="matrix-filter" type="search" aria-label="Filter packages"
-          placeholder="Filter packages…" value=${filter} onInput=${(e) => setFilter(e.target.value)} />
+        <div class="matrix-actions">
+          <button class="btn" onClick=${expandOneLevel}
+            title="Expand all currently visible packages by one level">Expand one level</button>
+          <button class="btn" onClick=${() => changeExpansion(new Set())}
+            disabled=${expanded.size === 0}>Collapse all</button>
+          <input class="matrix-filter" type="search" aria-label="Filter packages and modules"
+            placeholder="Filter packages or files…" value=${filter}
+            onInput=${(e) => (setFilter(e.target.value), onCell(null))} />
+        </div>
       </div>
-      ${packages.length
+      ${entries.length
         ? html`<div class="matrix-scroll"><table class="matrix-table" aria-label="Module import dependencies by package">
             <thead><tr><th class="matrix-corner" scope="col">Imports ↓ / →</th>
-              ${packages.map((name) => html`<th scope="col" title=${matrix.root + "." + name}>${name}</th>`)}
+              ${entries.map((entry) => html`<th scope="col" class=${entry.kind === "package" ? "matrix-package-heading" : ""}
+                >${label(entry)}</th>`)}
               <th scope="col">Total</th>
             </tr></thead>
-            <tbody>${packages.map((from) => {
-              const rowTotal = matrix.packages.reduce((sum, to) =>
-                sum + (matrix.cells.get(from + "\n" + to)?.count || 0), 0);
-              return html`<tr>
-                <th scope="row" title=${matrix.root + "." + from}>${from}</th>
-                ${packages.map((to) => {
-                  const cell = matrix.cells.get(from + "\n" + to);
+            <tbody>${entries.map((from) => {
+              const rowTotal = data.rowTotals.get(from.id) || 0;
+              return html`<tr class=${from.expanded ? "matrix-group-open" : ""}>
+                <th scope="row">
+                  <div class="matrix-row-name" style=${"padding-left:" + from.depth * 13 + "px"}>
+                    ${label(from)}
+                  </div>
+                </th>
+                ${entries.map((to) => {
+                  const cell = data.cells.get(from.id + "\n" + to.id);
                   const count = cell?.count || 0;
-                  const level = count ? Math.min(5, Math.max(1, Math.ceil(Math.log1p(count) / Math.log1p(matrix.maxCount) * 5))) : 0;
-                  const chosen = selected && selected.from === from && selected.to === to;
-                  const diagonal = from === to;
+                  const level = count ? Math.min(5, Math.max(1,
+                    Math.ceil(Math.log1p(count) / Math.log1p(data.maxCount) * 5))) : 0;
+                  const chosen = selected && selected.from === from.id && selected.to === to.id;
+                  const diagonal = from.id === to.id;
                   return html`<td class=${diagonal ? "matrix-diagonal" : ""}>
                     ${count
-                      ? html`<button class=${"matrix-value heat-" + level + (diagonal ? " matrix-self" : "") + (chosen ? " active" : "")}
+                      ? html`<button class=${"matrix-value heat-" + level + (chosen ? " active" : "")}
                           aria-pressed=${!!chosen}
-                          title=${from + " imports " + to + ": " + count + " module imports" + (cell.typeOnly ? " (" + cell.typeOnly + " type-only)" : "")}
-                          aria-label=${from + " imports " + to + ": " + count + " module imports"}
-                          onClick=${() => onCell({ from, to })}>${count}</button>`
+                          title=${from.path + " imports " + to.path + ": " + count + " direct imports" + (cell.typeOnly ? " (" + cell.typeOnly + " type-only)" : "")}
+                          aria-label=${from.path + " imports " + to.path + ": " + count + " direct imports"}
+                          onClick=${() => onCell({
+                            from: from.id, to: to.id, fromLabel: from.path, toLabel: to.path, cell,
+                          })}>${count}</button>`
                       : html`<span class="matrix-empty" aria-label="No imports">·</span>`}
                   </td>`;
                 })}
-                <td class="matrix-total">${rowTotal}</td>
+                <td class="matrix-total">${from.expanded ? "—" : rowTotal}</td>
               </tr>`;
             })}</tbody>
           </table></div>`
-        : html`<p class="hint">No packages match this filter.</p>`}
-      <div class="matrix-foot">Blue intensity = direct imports · amber diagonal = within-package imports · ordered by ${matrix.orderSource}.
-        Counts are not contract violations. ${matrix.packages.length} package groups · ${plural(matrix.total, "import")}.</div>
+        : html`<p class="hint">No packages or modules match this filter.</p>`}
+      <div class="matrix-foot">
+        Amber diagonal = imports within the same visible node · blue = between nodes · ordered by ${matrix.orderSource}.
+        ${entries.length} visible nodes · ${plural(data.total, "shown import")} of ${matrix.total} total.
+        Counts are not contract violations.
+      </div>
     </div>`;
   }
 
@@ -1455,11 +1500,11 @@
         </${Block}>`}
       </div>`;
     }
-    const cell = matrix.cells.get(selected.from + "\n" + selected.to);
+    const cell = selected.cell || matrix.cells.get(selected.from + "\n" + selected.to);
     if (!cell) return null;
     const imports = showAll ? cell.imports : cell.imports.slice(0, 100);
     return html`<div class="pad">
-      <h2>${selected.from} → ${selected.to}</h2>
+      <h2>${selected.fromLabel || selected.from} → ${selected.toLabel || selected.to}</h2>
       <p class="hint">${plural(cell.count, "direct module import")}; ${cell.typeOnly} type-only.</p>
       <button class="btn" onClick=${() => onModule(cell.imports[0].source)}>Show on map</button>
       <${Block} title="Module relationships" count=${cell.count}>
@@ -1899,6 +1944,7 @@
     const [expanded, setExpanded] = useState(initialExpanded);
     const [presentation, setPresentation] = useState("map");
     const [matrixCell, setMatrixCell] = useState(null);
+    const [matrixExpanded, setMatrixExpanded] = useState(() => new Set());
     const [focusScope, setFocusScope] = useState(null);
     const [mode, setMode] = useState("imports");
     const [layouts, setLayouts] = useState({ imports: "free", calls: "layers" });
@@ -2083,7 +2129,8 @@
                 onBusy=${setBusy}
               />`}
           </div>
-          ${presentation === "matrix" && html`<${MatrixView} matrix=${MATRIX} selected=${matrixCell} onCell=${setMatrixCell} />`}
+          ${presentation === "matrix" && html`<${MatrixView} matrix=${MATRIX} selected=${matrixCell} onCell=${setMatrixCell}
+            expanded=${matrixExpanded} onExpandedChange=${setMatrixExpanded} />`}
           <div class="overlay tools" hidden=${presentation === "matrix"}>
             ${focusScope && html`<span class="focus-label" title=${focusScope}>
               Focus: ${nodes.get(focusScope)?.name || focusScope}
