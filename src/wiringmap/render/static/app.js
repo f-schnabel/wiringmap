@@ -763,7 +763,14 @@
     };
   }
 
-  function GraphView({ view, focus, centerTick, theme, fitTick, layoutMode, onSelect, onToggle, onBusy }) {
+  // Dragging arrows always pans; nodes pan by default and can be moved on demand.
+  function configureInteraction(cy, interactionMode) {
+    cy.edges().unselectify().panify();
+    if (interactionMode === "pan") cy.nodes().panify();
+    else cy.nodes().unpanify();
+  }
+
+  function GraphView({ view, focus, centerTick, theme, fitTick, layoutMode, interactionMode, onSelect, onToggle, onBusy }) {
     const box = useRef(null);
     const cyRef = useRef(null);
     const positions = useRef(new Map());
@@ -861,6 +868,11 @@
       }, 30);
       return () => clearTimeout(timer);
     }, [view, layoutMode]);
+
+    useEffect(() => {
+      const cy = cyRef.current;
+      if (cy) configureInteraction(cy, interactionMode);
+    }, [view, interactionMode]);
 
     useEffect(() => {
       const cy = cyRef.current;
@@ -1553,6 +1565,7 @@
       <h2>${G.root_name}</h2>
       <p>A map of how this code is wired, made by wiringmap ${G.generator.version}${when ? " on " + when : ""}.</p>
       <ol>
+        <li><b>Pan</b> is the default: drag anywhere (including a node or an arrow) to pan. Switch to <b>Move nodes</b> to rearrange boxes. Arrows are never selectable.</li>
         <li><b>Boxes are Python files.</b> Dashed boxes are folders: double-click one to open it.</li>
         <li><b>Arrows point to what a file imports.</b> Switch to “Calls” for call relationships. Calls start in a top-down layout; select “Top down” for Imports too.</li>
         <li><b>Fit</b> reframes the entire graph; expanding or collapsing folders preserves the current camera.</li>
@@ -1617,6 +1630,7 @@
     const [mode, setMode] = useState("imports");
     const [layouts, setLayouts] = useState({ imports: "free", calls: "layers" });
     const layoutMode = layouts[mode];
+    const [interactionMode, setInteractionMode] = useState("pan");
     const [showExternal, setShowExternal] = useState(false);
     const [hideTransitive, setHideTransitive] = useState(true);
     const [sizeByConnections, setSizeByConnections] = useState(false);
@@ -1763,6 +1777,7 @@
                 centerTick=${centerTick}
                 fitTick=${fitTick}
                 layoutMode=${layoutMode}
+                interactionMode=${interactionMode}
                 theme=${theme}
                 onSelect=${onMapSelect}
                 onToggle=${toggle}
@@ -1771,6 +1786,14 @@
           </div>
           ${presentation === "matrix" && html`<${MatrixView} matrix=${MATRIX} selected=${matrixCell} onCell=${setMatrixCell} />`}
           <div class="overlay tools" hidden=${presentation === "matrix"}>
+            <div class="seg" role="group" aria-label="Map interaction mode">
+              <button aria-pressed=${interactionMode === "pan"}
+                title="Drag anywhere, including nodes and lines, to pan. Click nodes for details."
+                onClick=${() => setInteractionMode("pan")}>Pan</button>
+              <button aria-pressed=${interactionMode === "move"}
+                title="Drag nodes to reposition them. Drag the background or lines to pan."
+                onClick=${() => setInteractionMode("move")}>Move nodes</button>
+            </div>
             <button class="btn" onClick=${() => setFitTick((t) => t + 1)} title="Fit the whole map on screen">Fit</button>
             <button class="btn" disabled=${totalModules > MAX_EXPAND_ALL} title=${totalModules > MAX_EXPAND_ALL ? "Too many files to show at once; open folders one by one" : "Open every folder"} onClick=${() => setExpanded(allFolders())}>Expand all</button>
             <button class="btn" onClick=${() => setExpanded(new Set())}>Collapse all</button>
