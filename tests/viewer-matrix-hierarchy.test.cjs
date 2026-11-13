@@ -118,7 +118,7 @@ test("filtering nested names expands ancestors for navigation without double-cou
 test("matrix keeps expansion state in the app and supports row/column toggles", () => {
   assert.match(source, /const \[matrixExpanded, setMatrixExpanded\] = useState/);
   assert.match(source, /aria-expanded=\$\{entry\.expanded\}/);
-  assert.match(source, /class=\$\{"matrix-depth-" \+ Math\.min\(5, entry\.depth\)/);
+  assert.match(source, /class=\$\{"matrix-column-head matrix-depth-" \+ Math\.min\(5, entry\.depth\)/);
   assert.match(source, /Expand one level/);
   assert.match(source, /Collapse all/);
   assert.match(source, /onCell\(\{\s*from: from\.id, to: to\.id/);
