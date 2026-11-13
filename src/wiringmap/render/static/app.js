@@ -811,21 +811,26 @@
       previousLayout.current = layoutMode;
       if (sameNodes) {
         const shown = new Map(view.elements.filter((e) => e.group === "nodes").map((e) => [e.data.id, e.data]));
-        const resized = [...cy.nodes()].some((n) =>
+        const resized = cy.nodes().toArray().some((n) =>
           n.data("w") !== shown.get(n.id())?.w || n.data("h") !== shown.get(n.id())?.h);
+        const newEdges = view.elements.filter((e) => e.group === "edges");
+        const oldKeys = cy.edges().map((e) => e.id()).sort();
+        const newKeys = newEdges.map((e) => e.data.id).sort();
+        const edgesChanged = oldKeys.length !== newKeys.length || oldKeys.some((id, i) => id !== newKeys[i]);
         cy.batch(() => {
           cy.edges().remove();
-          cy.add(view.elements.filter((e) => e.group === "edges"));
+          cy.add(newEdges);
           cy.nodes().forEach((n) => {
-            const updated = shown.get(n.id());
-            if (updated) n.data({
-              muted: !!updated.muted, cycle: !!updated.cycle,
-              w: updated.w, h: updated.h, connections: updated.connections,
+            const changed = shown.get(n.id());
+            if (changed) n.data({
+              muted: !!changed.muted, cycle: !!changed.cycle,
+              w: changed.w, h: changed.h, connections: changed.connections,
             });
           });
         });
-        // Size changes require a relayout, but recoloring does not.
-        if (layoutMode !== "layers" && !layoutChanged && !resized) return;
+        // Recoloring cycles does not move nodes. Edge changes only relayout the
+        // top-down view; the free layout keeps manually adjusted positions.
+        if (!layoutChanged && !resized && (layoutMode !== "layers" || !edgesChanged)) return;
         onBusy(true);
         const timer = setTimeout(() => arrange(cy, false, () => onBusy(false), layoutMode), 30);
         return () => clearTimeout(timer);
